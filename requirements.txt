@@ -1,0 +1,5 @@
+torch>=1.9.0
+python-chess>=1.0.0
+tqdm
+# matplotlib
+tensorboard
