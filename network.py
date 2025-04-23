@@ -7,6 +7,7 @@ Based on the AlphaGo Zero paper, adapted for Chess.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Tuple
 import config
 
 
@@ -39,7 +40,8 @@ class ResidualBlock(nn.Module):
         identity = x
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        out += identity  # Skip connection
+        # skip connection
+        out += identity
         out = F.relu(out)
         return out
 
@@ -52,7 +54,6 @@ class PolicyValueNet(nn.Module):
     def __init__(self):
         super().__init__()
         # --- Convolutional Body ---
-        # Initial convolution layer
         self.conv_input = nn.Conv2d(
             config.INPUT_CHANNELS,
             config.CONV_FILTERS,
@@ -84,7 +85,8 @@ class PolicyValueNet(nn.Module):
         self.value_bn = nn.BatchNorm2d(1)
         # Flatten and fully connected layers
         self.value_fc1 = nn.Linear(1 * config.BOARD_SIZE * config.BOARD_SIZE, 256)
-        self.value_fc2 = nn.Linear(256, 1)  # Single output value
+        # Single output value
+        self.value_fc2 = nn.Linear(256, 1)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -120,25 +122,25 @@ class PolicyValueNet(nn.Module):
         return policy_logits, value
 
 
-# Example usage (optional)
-if __name__ == "__main__":
-    # Create a dummy input tensor
-    dummy_input = torch.randn(
-        config.BATCH_SIZE, config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE
-    ).to(config.DEVICE)
-
-    # Instantiate the network
-    model = PolicyValueNet().to(config.DEVICE)
-    model.eval()  # Set to evaluation mode
-
-    # Perform a forward pass
-    with torch.no_grad():
-        policy_logits, value = model(dummy_input)
-
-    print("Input shape:", dummy_input.shape)
-    print("Policy logits shape:", policy_logits.shape)
-    print("Value shape:", value.shape)
-    print(
-        "Sample Policy Logits:", policy_logits[0, :10].cpu().numpy()
-    )  # First 10 actions for first batch item
-    print("Sample Value:", value[0].item())
+# Example usage
+# if __name__ == "__main__":
+#     # Create a dummy input tensor
+#     dummy_input = torch.randn(
+#         config.BATCH_SIZE, config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE
+#     ).to(config.DEVICE)
+#
+#     # Instantiate the network
+#     model = PolicyValueNet().to(config.DEVICE)
+#     model.eval()  # Set to evaluation mode
+#
+#     # Perform a forward pass
+#     with torch.no_grad():
+#         policy_logits, value = model(dummy_input)
+#
+#     print("Input shape:", dummy_input.shape)
+#     print("Policy logits shape:", policy_logits.shape)
+#     print("Value shape:", value.shape)
+#     print(
+#         "Sample Policy Logits:", policy_logits[0, :10].cpu().numpy()
+#     )  # First 10 actions for first batch item
+#     print("Sample Value:", value[0].item())
