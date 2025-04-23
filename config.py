@@ -9,17 +9,7 @@ import torch
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Chess Game ---
-BOARD_SIZE = 8
-INPUT_CHANNELS = 17  # 8 history * 2 players + 1 color = 17 channels for input tensor
-
-# See AlphaGo Zero paper for details on input features:
-# (Piece type: 6 planes * 2 players = 12 planes)
-# (Repetitions: 2 planes for 1/2 repetitions)
-# (Total move count: 1 plane, scaled)
-# (Player color: 1 plane)
-# (Legality of moves: 1 plane - optional, can be derived)
-# Simplified here: 8 previous board states for each player (8*2=16) + player color (1)
-NUM_ACTIONS = 4672  # Maximum number of possible moves in chess (including promotions)
+NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
 NUM_SIMULATIONS = 100  # Number of MCTS simulations per move
