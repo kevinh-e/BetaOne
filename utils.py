@@ -8,27 +8,11 @@ from math import pi
 import chess
 import torch
 import numpy as np
-from typing import List, Tuple
+from typing import List
 from collections import Counter
 
 import config
 
-BOARD_SIZE = 8
-# 0–11  |   Current position: 6 piece types × 2 colors
-# 12–13 |   Repetition once / twice
-# 14–27 |   Position at t–1: same 14 planes
-# 28–41 |   Position at t–2: same 14 planes
-# … | …
-# 98–111|   Position at t–7
-# 112   |   Player‑to‑move (all 1’s if White, all 0’s if Black)
-# 113   |   White kingside castling right (1 or 0, everywhere)
-# 114   |   White queenside castling right
-# 115   |   Black kingside castling right
-# 116   |   Black queenside castling right
-# 117   |   Half‑move clock (no‑progress count)
-# 118   |   Full‑move number
-# 119   |   En passant
-INPUT_CHANNELS = 120
 
 # List of piece-type/color pairs in the order they occupy channels 0..11
 PIECE_ORDER = [
@@ -161,7 +145,7 @@ def encode_board(
 
     # init 0s
     encoded = np.zeros(
-        (INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE),
+        (config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE),
         dtype=np.float32,
     )
 
@@ -342,7 +326,7 @@ def index_to_move(index: int, board: chess.Board) -> chess.Move | None:
         promo = None
         if (from_r == 6 and to_r == 7) or (from_r == 1 and to_r == 0):
             promo = chess.QUEEN
-        move = chess.Move(from_sq, to_sq)
+        move = chess.Move(from_sq, to_sq, promotion=promo)
 
     # Knight moves
     elif offset < 64:
