@@ -1,7 +1,7 @@
 # self_play.py
 """
-Handles the self-play process to generate game data for training.
-Uses MCTS guided by the current best neural network.
+Handles the self-play process to generate game data for training
+Uses MCTS guided by the current best neural network
 """
 
 import os
@@ -10,7 +10,7 @@ import chess
 import numpy as np
 import torch
 from typing import List, Tuple, Dict
-import pickle  # For saving/loading game data
+import pickle
 
 import config
 import utils
@@ -49,7 +49,7 @@ def apply_temperature(probs: np.ndarray, temperature: float) -> np.ndarray:
 
 def select_move_with_temperature(probs: np.ndarray, move_number: int) -> int:
     """
-    Selects a move index based on probabilities, applying temperature.
+    Selects a move index based on probabilities by applying temperature
     """
     # Determine temperature based on move number
     if move_number < config.TEMPERATURE_THRESHOLD:
@@ -177,30 +177,30 @@ def save_game_data(game_data: List[SelfPlayData], iteration: int, game_id: int):
 
 
 # Example usage (within a larger training loop)
-if __name__ == "__main__":
-    print("Running self-play example...")
-    # Load or initialize the model
-    model = PolicyValueNet().to(config.DEVICE)
-    # model.load_state_dict(torch.load("path/to/best_model.pth")) # Load weights if available
-    model.eval()  # Set model to evaluation mode for MCTS
-
-    # Ensure directories exist
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-
-    # Run a single game
-    game_result_data = run_self_play_game(model, game_id=0)
-
-    if game_result_data:
-        print(f"\nGenerated {len(game_result_data)} training examples from game 0.")
-        # Example: Print first training sample details
-        state_tensor, policy_target, value_target = game_result_data[0]
-        print("First training sample:")
-        print("  State Tensor Shape:", state_tensor.shape)
-        # print("  Policy Target (sum):", np.sum(policy_target))
-        # print("  Policy Target (non-zero indices):", np.where(policy_target > 0)[0])
-        print("  Value Target:", value_target)
-
-        # Save the data (example for iteration 0)
-        save_game_data(game_result_data, iteration=0, game_id=0)
-    else:
-        print("Self-play game failed.")
+# if __name__ == "__main__":
+#     print("Running self-play example...")
+#     # Load or initialize the model
+#     model = PolicyValueNet().to(config.DEVICE)
+#     # model.load_state_dict(torch.load("path/to/best_model.pth")) # Load weights if available
+#     model.eval()  # Set model to evaluation mode for MCTS
+#
+#     # Ensure directories exist
+#     os.makedirs(config.DATA_DIR, exist_ok=True)
+#
+#     # Run a single game
+#     game_result_data = run_self_play_game(model, game_id=0)
+#
+#     if game_result_data:
+#         print(f"\nGenerated {len(game_result_data)} training examples from game 0.")
+#         # Example: Print first training sample details
+#         state_tensor, policy_target, value_target = game_result_data[0]
+#         print("First training sample:")
+#         print("  State Tensor Shape:", state_tensor.shape)
+#         # print("  Policy Target (sum):", np.sum(policy_target))
+#         # print("  Policy Target (non-zero indices):", np.where(policy_target > 0)[0])
+#         print("  Value Target:", value_target)
+#
+#         # Save the data (example for iteration 0)
+#         save_game_data(game_result_data, iteration=0, game_id=0)
+#     else:
+#         print("Self-play game failed.")

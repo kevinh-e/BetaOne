@@ -223,30 +223,31 @@ def run_mcts(
     for _ in range(config.NUM_SIMULATIONS):
         node = root
         search_path = [node]  # Keep track of nodes visited in this simulation
-        l_history = history.copy()
+        sim_history = history.copy()
+        current_board_in_sim = root.board_state.copy()
 
         # Build search path
         while not node.is_leaf():
-            move, node = node.select_child()
-            if node is None:
+            move, next_node = node.select_child()
+            if next_node is None:
+                # Fallback: treat the node as the leaf
                 print("Warning: Selection returned None node.")
-                # Fallback: treat the parent as the leaf for this simulation
-                node = search_path[-1]
                 break
-            new = l_history[-1].copy()
-            new.push(move)
-            l_history.append(new)
+
+            current_board_in_sim.push(move)
+            sim_history.append(current_board_in_sim.copy())
+
+            node = next_node
             search_path.append(node)
 
         leaf_node = node
         value = 0.0  # Default value
-        l_history = l_history[-8:]  # trim the history to 8 states
 
         # Expand
         if not leaf_node.is_terminal():
             # Get network evaluation for the leaf node
             encoded_state = (
-                utils.encode_board(leaf_node.board_state, l_history, tracker)
+                utils.encode_board(leaf_node.board_state, sim_history, tracker)
                 .unsqueeze(0)
                 .to(config.DEVICE)
             )
