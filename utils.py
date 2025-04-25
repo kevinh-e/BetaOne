@@ -8,7 +8,7 @@ from math import pi
 import chess
 import torch
 import numpy as np
-from typing import List
+from typing import List, Tuple  # Added Tuple
 from collections import Counter
 
 import config
@@ -32,16 +32,19 @@ PIECE_ORDER = [
 HISTORY_BLOCK_SIZE = len(PIECE_ORDER) + 2  # 12 piece planes + 2 repetition planes = 14
 
 
+# --- Move Encoding Constants (Standard 8x8x73 scheme) ---
+# Queen move directions (indices 0-7)
 QUEEN_DIRECTIONS = [
     (1, 0),
-    (-1, 0),
-    (0, 1),
-    (0, -1),
     (1, 1),
-    (1, -1),
+    (0, 1),
     (-1, 1),
+    (-1, 0),
     (-1, -1),
-]
+    (0, -1),
+    (1, -1),
+]  # N, NE, E, SE, S, SW, W, NW
+# Knight move directions (indices 0-7)
 KNIGHT_DIRECTIONS = [
     (2, 1),
     (1, 2),
@@ -52,168 +55,173 @@ KNIGHT_DIRECTIONS = [
     (1, -2),
     (2, -1),
 ]
-# --- Underpromotions ---
-PROMO_BASE = {
-    chess.ROOK: 0,
-    chess.BISHOP: 3,
-    chess.KNIGHT: 6,
-}
-# Direction index per (dx, dy), relative to from‐square
-# White promotions (dy = +1)
-WHITE_DIR_IDX = {
-    (1, 1): 0,  # right‐capture
-    (0, 1): 1,  # straight
-    (-1, 1): 2,  # left‐capture
-}
-# Black promotions (dy = -1)
-BLACK_DIR_IDX = {
-    (1, -1): 0,
-    (0, -1): 1,
-    (-1, -1): 2,
-}
-INV_PROMO_BASE = {
-    0: chess.ROOK,  # slots 0,1,2
-    3: chess.BISHOP,  # slots 3,4,5
-    6: chess.KNIGHT,  # slots 6,7,8
-}
-# inverse dir-idx for white & black
-INV_WHITE_DIR = {
-    0: (1, 1),  # right-capture
-    1: (0, 1),  # straight
-    2: (-1, 1),  # left-capture
-}
-INV_BLACK_DIR = {
-    0: (1, -1),
-    1: (0, -1),
-    2: (-1, -1),
-}
-
-ACTIONS_PLANES = 73
+# Underpromotion move directions relative to pawn (indices 0-2)
+PROMOTION_DIRECTIONS = [
+    (-1, 1),
+    (0, 1),
+    (1, 1),  # Left capture, Straight, Right capture (for White)
+]
+# Underpromotion piece types (indices 0-2) mapped to plane offset
+PROMOTION_PIECES = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
+# Total number of action planes per square
+ACTIONS_PLANES = 56 + 8 + 9  # 73
 
 
-# --- Repetition Tracker ---
+# --- Repetition Tracker (Revised - No Internal Board) ---
 class RepetitionTracker:
-    def __init__(self, board: chess.Board):
-        self.board = board
+    def __init__(self):
+        """Initializes the tracker without an internal board."""
         self.counts = Counter()
+        # Note: The initial position count must be added manually
+        # by the calling code after initialization using add_board().
 
-        # count the initial position
+    def add_board(self, board: chess.Board):
+        """Adds the current board state's key to the counts."""
+        # Use the board's transposition key directly
         self.counts[board._transposition_key()] += 1
 
-    def push(self, move: chess.Move):
-        self.board.push(move)
-        self.counts[self.board._transposition_key()] += 1
-
-    def pop(self):
-        key = self.board._transposition_key()
-        self.counts[key] -= 1
-        self.board.pop()
+    def remove_board(self, board: chess.Board):
+        """Removes the current board state's key from the counts (if needed)."""
+        key = board._transposition_key()
+        if self.counts[key] > 0:
+            self.counts[key] -= 1
+            if self.counts[key] == 0:
+                del self.counts[key]  # Remove entry if count is zero
+        # else: # Should not happen if add/remove are paired correctly
+        #     print(f"Warning: Tried to remove board key {key} with count <= 0.")
 
     def repetitions(self, board: chess.Board) -> int:
         """
-        Returns the how many times this position has happenned
+        Returns how many times this board position has occurred *before*
+        the current instance being queried.
         """
-        return self.counts[self.board._transposition_key()] - 1
+        key = board._transposition_key()
+        # Subtract 1 because the count includes the current instance if it's already added.
+        # If the key isn't present, count is 0, max(0, 0-1) is 0.
+        return max(0, self.counts[key] - 1)
+
+    def get_count(self, board: chess.Board) -> int:
+        """Returns the raw count for a given board state."""
+        # Returns 0 if the key is not present
+        return self.counts[board._transposition_key()]
 
 
-# --- Board Encoding ---
+# --- Board Encoding (Uses Revised Tracker) ---
 def encode_board(
     board: chess.Board, history: List[chess.Board], tracker: RepetitionTracker
 ) -> torch.Tensor:
     """
-    Encodes the current board state and recent history into a tensor.
+    Encodes the current board state and recent history into a tensor
+    following AlphaZero paper conventions (120 channels).
 
     Args:
         board: The current chess.Board object.
-        history: A list of the last few board states (chess.Board objects).
-        tracker: Tracker for the number of board repetitions
+        history: List of the last 8 board states including current (board = history[-1]).
+                 Should contain board objects.
+        tracker: Repetition tracker object (revised version).
 
     Returns:
         A PyTorch tensor representing the board state.
-        Shape: (INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+        Shape: (120, 8, 8)
     """
+    # Ensure history includes the current board as the last element
+    if not history or board != history[-1]:
+        # If history is empty or doesn't end with board, this is an issue
+        # For robustness, let's reconstruct a valid history if possible
+        print(
+            f"Warning: History mismatch in encode_board. Board FEN: {board.fen()}. History length: {len(history)}"
+        )
+        # If history is empty, create history containing only the current board
+        if not history:
+            history = [board.copy()]
+        # If history doesn't end with board, replace last element (less ideal)
+        elif board != history[-1]:
+            print("Warning: Replacing last history element with current board.")
+            history = history[:-1] + [board.copy()]
+            history = history[-8:]  # Ensure max length
 
-    # - Piece positions (Pawn, Knight, Bishop, Rook, Queen, King) for current player
-    # - Piece positions for opponent player
-    # - Repetition counts
-    # - History
-    # - Player color
-    # - Castling rights
-    # - Halfmove clock
-    # - Move count
-    # - En passant square
+    # Ensure history length is max 8
+    if len(history) > 8:
+        print(f"Warning: History length > 8 ({len(history)}). Slicing.")
+        history = history[-8:]
 
-    # init 0s
     encoded = np.zeros(
-        (config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE),
-        dtype=np.float32,
+        (config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE), dtype=np.float32
     )
 
-    def encode_piece(
-        board: chess.Board,
+    # --- Helper for placing pieces ---
+    def encode_piece_plane(
+        target_board: chess.Board,
         piece_type: chess.PieceType,
         color: bool,
-        channel: int,
-        encoded: np.ndarray,
-    ) -> None:
-        """
-        Marks all squares of a given piece_type/color in the specified channel.
-        """
-        for square in board.pieces(piece_type, color):
+        plane_idx: int,
+    ):
+        for square in target_board.pieces(piece_type, color):
             r, f = chess.square_rank(square), chess.square_file(square)
-            encoded[channel, r, f] = 1.0
+            encoded[plane_idx, r, f] = 1.0
 
-    def encode_history(
-        history: List[chess.Board],
-        tracker: RepetitionTracker,
-        encoded: np.ndarray,
-        max_steps: int = 8,
-    ) -> None:
-        """
-        Fills `encoded` with piece and repetition features for up to `max_steps` boards.
+    # --- Encode History (T-7 to T) ---
+    num_history_states = len(history)
+    # Calculate the actual starting channel index based on how much history we have
+    # If len=8, start_channel_idx=0. If len=1, start_channel_idx=7*14=98.
+    start_channel_idx = (8 - num_history_states) * HISTORY_BLOCK_SIZE
 
-        - history: list of past boards (oldest first, current last)
-        - tracker: tracks repetition counts for any board
-        - encoded: numpy array of shape (C, 8, 8) already zero-initialized
-        - max_steps: how many time-steps to include (typically 8)
+    for i in range(num_history_states):
+        hist_board = history[i]
+        # Calculate base channel index correctly based on position in history window (0..7)
+        base = (
+            start_channel_idx + i * HISTORY_BLOCK_SIZE
+        )  # 14 channels per history state
 
-        This writes into channels 0..(max_steps*HISTORY_BLOCK_SIZE - 1).
-        """
-        # Take only the last max_steps boards (pad if fewer)
-        recent = history[-max_steps:]
-        # If too few, pad at front with empty boards (all zeros + no repeats)
-        if len(recent) < max_steps:
-            pad_count = max_steps - len(recent)
-            recent = [chess.Board(None)] * pad_count + recent
+        # Check if base index is valid before writing
+        if not (0 <= base < 112):
+            print(
+                f"!!! ERROR: Calculated base channel index {base} is out of bounds [0, 111] !!!"
+            )
+            print(
+                f"  num_history_states={num_history_states}, i={i}, start_channel_idx={start_channel_idx}"
+            )
+            # Handle error - maybe return zero tensor or raise exception?
+            # For now, skip writing to this invalid index.
+            continue
 
-        for i, b in enumerate(recent):
-            base = i * HISTORY_BLOCK_SIZE
-            # 1) piece planes
-            for j, (ptype, clr) in enumerate(PIECE_ORDER):
-                encode_piece(b, ptype, clr, base + j, encoded)
-            # 2) repetition planes
-            rep = tracker.repetitions(b)
-            encoded[base + 12, :, :] = 1.0 if rep >= 1 else 0.0
-            encoded[base + 13, :, :] = 1.0 if rep >= 2 else 0.0
+        # 1) Piece planes (12 channels)
+        for j, (ptype, clr) in enumerate(PIECE_ORDER):
+            encode_piece_plane(hist_board, ptype, clr, base + j)
 
-    # Player turn
+        # 2) Repetition planes (2 channels)
+        # Use the tracker to get repetitions for this specific historical board state
+        rep = tracker.repetitions(
+            hist_board
+        )  # Get repetitions *before* this state occurred
+        encoded[base + 12, :, :] = (
+            1.0 if rep >= 1 else 0.0
+        )  # Rep >= 1 means seen twice before current
+        encoded[base + 13, :, :] = (
+            1.0 if rep >= 2 else 0.0
+        )  # Rep >= 2 means seen thrice before current
+
+    # --- Encode Current Features (Channels 112-119) ---
+    # Player turn (Channel 112)
     encoded[112, :, :] = 1.0 if board.turn == chess.WHITE else 0.0
 
-    # castling P1
-    encoded[113, :, :] = board.has_kingside_castling_rights(board.turn)
-    encoded[114, :, :] = board.has_queenside_castling_rights(board.turn)
+    # Castling rights (Channels 113-116)
+    encoded[113, :, :] = 1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0
+    encoded[114, :, :] = (
+        1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
+    )
+    encoded[115, :, :] = 1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0
+    encoded[116, :, :] = (
+        1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0
+    )
 
-    # castling P2
-    opp = not board.turn
-    encoded[115, :, :] = board.has_kingside_castling_rights(opp)
-    encoded[116, :, :] = board.has_queenside_castling_rights(opp)
+    # Halfmove clock (Channel 117) - Scaled? Paper isn't specific. Let's use raw.
+    encoded[117, :, :] = float(board.halfmove_clock)
 
-    # halfmove_clock
-    encoded[117, :, :] = board.halfmove_clock
+    # Fullmove number (Channel 118) - Scaled? Paper isn't specific. Let's use raw.
+    encoded[118, :, :] = float(board.fullmove_number)
 
-    # Total move count
-    encoded[118, :, :] = board.fullmove_number
-
+    # En passant square (Channel 119)
     if board.ep_square is not None:
         rank, file = (
             chess.square_rank(board.ep_square),
@@ -224,196 +232,271 @@ def encode_board(
     return torch.from_numpy(encoded)
 
 
-# --- Move Handling ---
-def normalise(dx, dy):
-    """
-    Reduce (dx, dy) to unit directions
-    """
-    if dx != 0:
-        dx //= abs(dx)
-    if dy != 0:
-        dy //= abs(dy)
-    return dx, dy
+# --- Move Handling (Keep the corrected move_to_index and index_to_move from previous fix) ---
+# ... (move_to_index, index_to_move, get_legal_mask, get_game_outcome, test_move_indexing functions) ...
+# Ensure these functions are the corrected versions from the previous step.
 
 
 def move_to_index(move: chess.Move) -> int:
     """
-        Converts a chess.Move object to a unique integer index.
-        Needs a consistent mapping for all possible moves.
-        See python-chess documentation or AlphaZero resources for common mappings.
-
-        Args:
-            move: The chess.Move object.
-    CTS Enhancement: It uses Monte Carlo Tree Search (MCTS) as its search algorithm du
-        Returns:
-            An integer index representing the move.
+    Converts a chess.Move object to a unique integer index (0-4671)
+    based on the 8x8x73 action representation.
     """
-    # 1. Queen moves (56 directions)
-    # 2. Knight moves (8 directions)
-    # 3. Underpromotions (Queen/Rook/Bishop * 3 directions)
     from_square = move.from_square
     to_square = move.to_square
     promotion = move.promotion
 
-    # get rank and file
-    from_r = chess.square_rank(from_square)
-    from_f = chess.square_file(from_square)
-    to_r = chess.square_rank(to_square)
-    to_f = chess.square_file(to_square)
+    from_r, from_f = chess.square_rank(from_square), chess.square_file(from_square)
+    to_r, to_f = chess.square_rank(to_square), chess.square_file(to_square)
+    delta_r, delta_f = to_r - from_r, to_f - from_f
 
-    delta_r = to_r - from_r
-    delta_f = to_f - from_f
-
-    ndr, ndf = normalise(delta_r, delta_f)
-
-    # RBQ moves
-    if (ndr, ndf) in QUEEN_DIRECTIONS:
-        direction = QUEEN_DIRECTIONS.index((ndr, ndf))
-        distance = max(abs(delta_r), abs(delta_f)) - 1
-        return from_square * ACTIONS_PLANES + direction * 7 + distance
-
-    # knight moves
-    elif (ndr, ndf) in KNIGHT_DIRECTIONS:
-        direction = KNIGHT_DIRECTIONS.index((ndr, ndf))
-        return from_square * ACTIONS_PLANES + 56 + direction
-
-    # Underpromotion
+    # Check for underpromotion first
     if promotion and promotion != chess.QUEEN:
-        dir_map = WHITE_DIR_IDX if delta_r > 0 else BLACK_DIR_IDX
         try:
-            direction = dir_map[(delta_f, delta_r)]
-            base = PROMO_BASE[promotion]
-        except KeyError:
-            raise ValueError(f"Invalid underpromotion vector {(delta_f, delta_r)}")
+            if from_r == 6:  # White pawn promotion
+                direction_idx = PROMOTION_DIRECTIONS.index(
+                    (delta_f, delta_r)
+                )  # Should be (df, 1)
+            elif from_r == 1:  # Black pawn promotion
+                direction_idx = PROMOTION_DIRECTIONS.index(
+                    (delta_f, -delta_r)
+                )  # Should be (df, 1)
+            else:
+                raise ValueError("Promotion from invalid rank")
 
-        return from_square * ACTIONS_PLANES + 64 + base + direction
-    return 1
+            piece_idx = PROMOTION_PIECES.index(promotion)
+            plane_offset = 64 + piece_idx * 3 + direction_idx
+            return from_square * ACTIONS_PLANES + plane_offset
+        except (ValueError, IndexError):
+            raise ValueError(f"Invalid underpromotion move: {move.uci()}")
+
+    # Check for knight moves
+    is_knight_move = (abs(delta_r), abs(delta_f)) in [(1, 2), (2, 1)]
+    if is_knight_move:
+        try:
+            direction_idx = KNIGHT_DIRECTIONS.index((delta_r, delta_f))
+            plane_offset = 56 + direction_idx
+            return from_square * ACTIONS_PLANES + plane_offset
+        except ValueError:
+            raise ValueError(
+                f"Invalid knight move delta: {(delta_r, delta_f)} for move {move.uci()}"
+            )
+
+    # Handle Queen moves (includes sliding pieces, king moves, pawn moves/captures including queen promotion)
+    is_queen_move = abs(delta_r) == abs(delta_f) or delta_r == 0 or delta_f == 0
+    if is_queen_move:
+        dr = 0 if delta_r == 0 else delta_r // abs(delta_r)
+        df = 0 if delta_f == 0 else delta_f // abs(delta_f)
+        try:
+            direction_idx = QUEEN_DIRECTIONS.index((dr, df))
+            distance = max(abs(delta_r), abs(delta_f))
+            if distance == 0:
+                raise ValueError(
+                    "Zero distance move"
+                )  # Should not happen for legal moves
+            if distance > 7:
+                raise ValueError("Move distance > 7")
+            plane_offset = direction_idx * 7 + (distance - 1)
+            return from_square * ACTIONS_PLANES + plane_offset
+        except (ValueError, IndexError):
+            raise ValueError(
+                f"Invalid queen/sliding move: {move.uci()} with delta {(delta_r, delta_f)}"
+            )
+
+    raise ValueError(f"Unhandled move type for move: {move.uci()}")
 
 
-def index_to_move(index: int, board: chess.Board) -> chess.Move | None:
+def index_to_move(index: int, board: chess.Board) -> chess.Move:
     """
-    Converts an integer index back to a chess.Move object,
-    considering only legal moves for the current board state.
-
-    Args:
-        index: The integer index representing the potential move.
-        board: The current chess.Board to check legality against.
-
-    Returns:
-        The corresponding chess.Move object if it's legal, otherwise None.
+    Converts an integer index (0-4671) back to a chess.Move object.
+    Does NOT check for legality.
     """
-
     if not (0 <= index < config.NUM_ACTIONS):
-        raise ValueError("Index out of valid range (0 to 4671")
+        raise ValueError(
+            f"Index {index} out of valid range [0, {config.NUM_ACTIONS - 1}]"
+        )
 
     from_sq = index // ACTIONS_PLANES
-    offset = index % ACTIONS_PLANES
+    plane_offset = index % ACTIONS_PLANES
 
-    from_f = chess.square_file(from_sq)
-    from_r = chess.square_rank(from_sq)
+    from_r, from_f = chess.square_rank(from_sq), chess.square_file(from_sq)
 
-    # RBQ moves
-    if offset < 56:
-        direction = offset // 7
-        distance = (offset % 7) + 1
-        dr, df = QUEEN_DIRECTIONS[direction]
-        to_f = from_f + (df * distance)
-        to_r = from_r + (dr * distance)
+    # Decode Queen moves (planes 0-55)
+    if plane_offset < 56:
+        direction_idx = plane_offset // 7
+        distance = (plane_offset % 7) + 1
+        dr, df = QUEEN_DIRECTIONS[direction_idx]
+        to_r, to_f = from_r + dr * distance, from_f + df * distance
+
+        if not (0 <= to_r <= 7 and 0 <= to_f <= 7):
+            raise ValueError(
+                f"Index {index} queen move decodes to off-board square ({to_r}, {to_f})"
+            )
         to_sq = chess.square(to_f, to_r)
+
         promo = None
-        if (from_r == 6 and to_r == 7) or (from_r == 1 and to_r == 0):
-            promo = chess.QUEEN
-        move = chess.Move(from_sq, to_sq, promotion=promo)
+        piece_at_from = board.piece_at(from_sq)
+        if piece_at_from and piece_at_from.piece_type == chess.PAWN:
+            if (piece_at_from.color == chess.WHITE and from_r == 6 and to_r == 7) or (
+                piece_at_from.color == chess.BLACK and from_r == 1 and to_r == 0
+            ):
+                promo = chess.QUEEN
+        return chess.Move(from_sq, to_sq, promotion=promo)
 
-    # Knight moves
-    elif offset < 64:
-        direction = offset - 56
-        dr, df = KNIGHT_DIRECTIONS[direction]
-        to_f = from_f + df
-        to_r = from_r + dr
+    # Decode Knight moves (planes 56-63)
+    elif plane_offset < 64:
+        direction_idx = plane_offset - 56
+        dr, df = KNIGHT_DIRECTIONS[direction_idx]
+        to_r, to_f = from_r + dr, from_f + df
+
+        if not (0 <= to_r <= 7 and 0 <= to_f <= 7):
+            raise ValueError(
+                f"Index {index} knight move decodes to off-board square ({to_r}, {to_f})"
+            )
         to_sq = chess.square(to_f, to_r)
-        move = chess.Move(from_sq, to_sq)
+        return chess.Move(from_sq, to_sq)
 
-    # Underpromotions
+    # Decode Underpromotions (planes 64-72)
     else:
-        up = offset - 64
-        base = (up // 3) * 3
-        dir = up % 3
-        piece = INV_PROMO_BASE[base]
+        underpromo_offset = plane_offset - 64
+        piece_idx = underpromo_offset // 3
+        direction_idx = underpromo_offset % 3
+        promo_piece = PROMOTION_PIECES[piece_idx]
 
-        dir_map = INV_WHITE_DIR if from_r == 6 else INV_BLACK_DIR
-        dr, df = dir_map[dir]
+        # Check piece at from_sq before inferring color/rank
+        piece_at_from = board.piece_at(from_sq)
+        if not piece_at_from or piece_at_from.piece_type != chess.PAWN:
+            raise ValueError(
+                f"Index {index} implies underpromotion but no pawn at {chess.square_name(from_sq)}"
+            )
 
-        to_f = from_f + df
-        to_r = from_r + dr
+        if piece_at_from.color == chess.WHITE and from_r == 6:
+            df, dr = PROMOTION_DIRECTIONS[direction_idx]
+        elif piece_at_from.color == chess.BLACK and from_r == 1:
+            df, dr_rel = PROMOTION_DIRECTIONS[direction_idx]
+            dr = -dr_rel
+        else:
+            raise ValueError(
+                f"Index {index} implies underpromotion from invalid rank {from_r} for color {piece_at_from.color}"
+            )
+
+        to_r, to_f = from_r + dr, from_f + df
+
+        if not (0 <= to_r <= 7 and 0 <= to_f <= 7):
+            raise ValueError(
+                f"Index {index} underpromotion decodes to off-board square ({to_r}, {to_f})"
+            )
         to_sq = chess.square(to_f, to_r)
-
-        move = chess.Move(from_sq, to_sq, promotion=piece)
-
-    if move not in board.legal_moves:
-        raise ValueError(f"Generated move {move.uci()} is illegal")
-    return move
+        return chess.Move(from_sq, to_sq, promotion=promo_piece)
 
 
 def get_legal_mask(board: chess.Board) -> torch.Tensor:
-    """
-    Creates a mask indicating legal moves for the current board state.
-
-    Args:
-        board: The current chess.Board object.
-
-    Returns:
-        A PyTorch tensor (boolean or float) of shape (NUM_ACTIONS,)
-        where legal moves are marked (e.g., True or 1.0).
-    """
+    """Creates mask for legal moves."""
     mask = torch.zeros(config.NUM_ACTIONS, dtype=torch.bool)
     for move in board.legal_moves:
-        idx = move_to_index(move)
-        if 0 <= idx < config.NUM_ACTIONS:
-            mask[idx] = True
+        try:
+            idx = move_to_index(move)
+            if 0 <= idx < config.NUM_ACTIONS:
+                mask[idx] = True
+            else:
+                print(
+                    f"Warning: move_to_index({move.uci()}) returned out-of-bounds index {idx}"
+                )
+        except ValueError as e:
+            print(f"Warning: Could not get index for legal move {move.uci()}: {e}")
     return mask
 
 
-# --- Game Outcome ---
 def get_game_outcome(board: chess.Board) -> float | None:
-    """
-    Determines the game outcome from the perspective of the current player.
-
-    Args:
-        board: The final chess.Board object.
-
-    Returns:
-        1.0 if the current player won.
-        -1.0 if the current player lost.
-        0.0 for a draw.
-        None if the game is not over.
-    """
-    if not board.is_game_over():
+    """Outcome from perspective of player who JUST MOVED."""
+    if not board.is_game_over(claim_draw=True):
         return None
+    result = board.result(claim_draw=True)
+    player_who_moved = not board.turn
+    if result == "1-0":
+        return 1.0 if player_who_moved == chess.WHITE else -1.0
+    elif result == "0-1":
+        return 1.0 if player_who_moved == chess.BLACK else -1.0
+    else:
+        return 0.0  # Draw
 
-    result = board.result()
-    current_player_turn = board.turn  # Whose turn it WOULD be if game continued
 
-    if result == "1-0":  # White wins
-        return (
-            1.0 if current_player_turn == chess.BLACK else -1.0
-        )  # White won, so if it's Black's turn (hypothetically), Black lost (-1)
-    elif result == "0-1":  # Black wins
-        return (
-            1.0 if current_player_turn == chess.WHITE else -1.0
-        )  # Black won, so if it's White's turn (hypothetically), White lost (-1)
-    elif result == "1/2-1/2":  # Draw
-        return 0.0
-    else:  # Other draw conditions (stalemate, insufficient material, etc.)
-        # Check specific draw conditions if needed
-        if (
-            board.is_stalemate()
-            or board.is_insufficient_material()
-            or board.is_seventyfive_moves()
-            or board.is_fivefold_repetition()
-        ):
-            return 0.0
+def test_move_indexing(board: chess.Board):
+    """Tests move indexing consistency."""
+    # ... (Keep the improved test function from previous step) ...
+    print(f"\nTesting move indexing for FEN: {board.fen()}")
+    errors = 0
+    legal_moves = list(board.legal_moves)
+    print(f"Found {len(legal_moves)} legal moves.")
+    indices_seen = set()
+    moves_from_indices = {}
+    print("Testing move -> index mapping...")
+    for move in legal_moves:
+        try:
+            idx = move_to_index(move)
+            if not (0 <= idx < config.NUM_ACTIONS):
+                print(
+                    f"  ERROR: Move {move.uci()} -> Index {idx} out of bounds [0, {config.NUM_ACTIONS - 1}]"
+                )
+                errors += 1
+                continue
+            if idx in indices_seen:
+                print(f"  ERROR: Move {move.uci()} -> Index {idx} already seen!")
+                for m_other, i_other in moves_from_indices.items():
+                    if i_other == idx:
+                        print(f"         (Collision with: {m_other.uci()})")
+                errors += 1
+            indices_seen.add(idx)
+            moves_from_indices[move] = idx
+        except Exception as e:
+            print(f"  EXCEPTION during move_to_index for move {move.uci()}: {e}")
+            errors += 1
+    print("Testing index -> move mapping (for indices generated from legal moves)...")
+    for move, idx in moves_from_indices.items():
+        try:
+            retrieved_move = index_to_move(idx, board)
+            if retrieved_move != move:
+                print(
+                    f"  ERROR: Index {idx} (from {move.uci()}) -> Retrieved {retrieved_move.uci()} (Mismatch!)"
+                )
+                errors += 1
+            elif retrieved_move not in board.legal_moves:
+                print(
+                    f"  ERROR: Index {idx} -> Retrieved {retrieved_move.uci()} which is NOT in board.legal_moves?"
+                )
+                errors += 1
+        except Exception as e:
+            print(
+                f"  EXCEPTION during index_to_move for index {idx} (from move {move.uci()}): {e}"
+            )
+            errors += 1
+    print(f"Testing get_legal_mask consistency...")
+    try:
+        legal_mask = get_legal_mask(board).numpy()
+        mask_indices = set(np.where(legal_mask)[0])
+        if indices_seen != mask_indices:
+            print(
+                f"  WARNING: Indices from legal moves ({len(indices_seen)}) != indices from get_legal_mask ({len(mask_indices)})."
+            )
+            print(f"    Only in move_to_index: {indices_seen - mask_indices}")
+            print(f"    Only in get_legal_mask: {mask_indices - indices_seen}")
+            errors += len((indices_seen - mask_indices) | (mask_indices - indices_seen))
+        else:
+            print("  Mask indices match indices from legal moves.")
+    except Exception as e:
+        print(f"  EXCEPTION during get_legal_mask test: {e}")
+        errors += 1
+    print(f"Finished testing. Found {errors} errors.")
+    return errors
 
-    # Should not be reached if board.is_game_over() is true and result is handled
-    print(f"Warning: Unhandled game over state? Result: {result}, Board: {board.fen()}")
-    return 0.0  # Default to draw for safety
+
+# Example Usage
+if __name__ == "__main__":
+    board = chess.Board()
+    test_move_indexing(board)
+    board = chess.Board("rnbqkbnr/pppp1Ppp/8/8/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1")
+    test_move_indexing(board)
+    board = chess.Board(
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+    )
+    test_move_indexing(board)

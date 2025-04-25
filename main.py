@@ -110,6 +110,8 @@ def main():
 
         # Use multiprocessing pool for parallel game generation
         num_workers = max(1, mp.cpu_count() // 2)
+        # num_workers = 1
+
         print(
             f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
         )
