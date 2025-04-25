@@ -302,9 +302,6 @@ def index_to_move(index: int, board: chess.Board) -> chess.Move | None:
     Returns:
         The corresponding chess.Move object if it's legal, otherwise None.
     """
-    # TODO: Implement the reverse mapping from index to move.
-    # This must be the inverse of move_to_index.
-    # After getting the potential move from the index, check if it's legal.
 
     if not (0 <= index < config.NUM_ACTIONS):
         raise ValueError("Index out of valid range (0 to 4671")
