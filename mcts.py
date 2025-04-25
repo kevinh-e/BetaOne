@@ -13,11 +13,11 @@ from typing import Dict, Optional, Tuple, List
 
 import config
 import utils
-from network import PolicyValueNet  # Import the network class
+from network import PolicyValueNet
 
 
 class MCTSNode:
-    """Represents a node in the Monte Carlo Search Tree."""
+    """A node in the Monte Carlo Search Tree."""
 
     def __init__(
         self, parent: Optional["MCTSNode"], prior_p: float, board_state: chess.Board
@@ -26,23 +26,23 @@ class MCTSNode:
         Initializes a new MCTS node.
 
         Args:
-            parent: The parent node in the tree. None for the root node.
-            prior_p: The prior probability of selecting this node's action from the parent,
-                     as determined by the neural network's policy head.
-            board_state: The chess.Board state represented by this node.
+            parent: Parent node, none for the root node.
+            prior_p: The probability of selecting this node's action from the parent. Output from policy head
+            board_state: This node's board
         """
         self.parent = parent
-        self.children: Dict[chess.Move, "MCTSNode"] = {}  # Maps move to child node
-        self.board_state = board_state.copy()  # Ensure independent board state
+        self.children: Dict[chess.Move, "MCTSNode"] = {}
+        # current board
+        self.board_state = board_state.copy()
 
-        self.n_visits = 0  # N(s, a): Visit count for the edge leading to this node
-        self.q_value = 0.0  # Q(s, a): Mean action value (estimated win rate)
-        self.u_value = 0.0  # U(s, a): Exploration bonus (Upper Confidence Bound)
-        self.prior_p = prior_p  # P(s, a): Prior probability from the policy network
+        self.n_visits = 0  # this node's visit count
+        self.q_value = 0.0  # board evaluation
+        self.u_value = 0.0  # UCB
+        self.prior_p = prior_p  # prior probability from the policy network
 
     def expand(self, policy_probs: np.ndarray, legal_moves: List[chess.Move]):
         """
-        Expands the node by creating children for all legal moves.
+        Creates children for all legal moves.
         The policy probabilities from the network are assigned as priors.
 
         Args:
@@ -55,15 +55,19 @@ class MCTSNode:
                 if move not in self.children:
                     move_idx = utils.move_to_index(move)
                     if 0 <= move_idx < len(policy_probs):
+                        # get policy from NN
                         prior = policy_probs[move_idx]
-                        # Create the board state for the child node
+
+                        # give the child the board state after the move
                         child_board = self.board_state.copy()
                         child_board.push(move)
                         self.children[move] = MCTSNode(
                             parent=self, prior_p=prior, board_state=child_board
                         )
-                    # else: # Handle cases where move_to_index might be out of bounds (shouldn't happen with correct mapping)
-                    #     print(f"Warning: Move index {move_idx} out of bounds for policy_probs.")
+                    else:
+                        print(
+                            f"Warning: Move index {move_idx} out of bounds for policy_probs."
+                        )
 
     def select_child(self) -> Tuple[chess.Move, "MCTSNode"]:
         """
@@ -81,15 +85,11 @@ class MCTSNode:
         best_child = None
 
         # Ensure parent visit count is available for UCT calculation
-        parent_visits = (
-            self.parent.n_visits if self.parent else self.n_visits
-        )  # Use self visits if root
-
+        # Use self visits if root
+        parent_visits = self.parent.n_visits if self.parent else self.n_visits
         if not self.children or parent_visits == 0:
             # Handle terminal nodes or nodes right after creation (parent_visits might be 0)
             # If root node has 0 visits, U calculation needs adjustment or initial random choice.
-            # For simplicity here, if parent_visits is 0, U becomes 0.
-            # A better approach might involve virtual losses or first-play urgency.
             parent_visits = (
                 1  # Avoid division by zero, effectively making U rely only on prior
             )
@@ -164,7 +164,10 @@ class MCTSNode:
 
 
 def run_mcts(
-    root_board: chess.Board, model: PolicyValueNet, history: List[chess.Board]
+    root_board: chess.Board,
+    model: PolicyValueNet,
+    history: List[chess.Board],
+    tracker: utils.RepetitionTracker,
 ) -> Tuple[chess.Move, np.ndarray]:
     """
     Runs the MCTS algorithm for a given number of simulations to determine the best move.
@@ -182,10 +185,12 @@ def run_mcts(
     """
     root = MCTSNode(parent=None, prior_p=1.0, board_state=root_board)
 
-    # Initial expansion of the root node
+    # Expansion
     if not root.is_terminal():
         encoded_state = (
-            utils.encode_board(root.board_state, history).unsqueeze(0).to(config.DEVICE)
+            utils.encode_board(root.board_state, history, tracker)
+            .unsqueeze(0)
+            .to(config.DEVICE)
         )
         with torch.no_grad():
             policy_logits, value = model(encoded_state)
@@ -214,66 +219,56 @@ def run_mcts(
         # but it influences the priors. Let's skip explicit root update here.
         # root.update(value.item()) # This might bias the root Q value prematurely
 
+    # Select
     for _ in range(config.NUM_SIMULATIONS):
         node = root
         search_path = [node]  # Keep track of nodes visited in this simulation
+        sim_history = history.copy()
+        current_board_in_sim = root.board_state.copy()
 
-        # 1. Selection: Traverse the tree using UCT scores until a leaf node is reached.
+        # Build search path
         while not node.is_leaf():
-            move, node = node.select_child()
-            if node is None:  # Should not happen if selection logic is correct
+            move, next_node = node.select_child()
+            if next_node is None:
+                # Fallback: treat the node as the leaf
                 print("Warning: Selection returned None node.")
-                # Fallback: treat the parent as the leaf for this simulation
-                node = search_path[-1]
                 break
+
+            current_board_in_sim.push(move)
+            sim_history.append(current_board_in_sim.copy())
+
+            node = next_node
             search_path.append(node)
 
         leaf_node = node
         value = 0.0  # Default value
 
-        # 2. Expansion & Evaluation: If the leaf node is not terminal, expand it.
+        # Expand
         if not leaf_node.is_terminal():
             # Get network evaluation for the leaf node
             encoded_state = (
-                utils.encode_board(leaf_node.board_state, history)
+                utils.encode_board(leaf_node.board_state, sim_history, tracker)
                 .unsqueeze(0)
                 .to(config.DEVICE)
-            )  # TODO: Pass history correctly
+            )
             with torch.no_grad():
                 policy_logits, network_value = model(encoded_state)
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
-            value = (
-                network_value.item()
-            )  # Value from the network's perspective (current player at leaf)
+            value = network_value.item()
 
             # Expand the leaf node
             leaf_node.expand(policy_probs, list(leaf_node.board_state.legal_moves))
         else:
-            # If the leaf node is terminal, the value is the actual game outcome
-            # Get outcome from the perspective of the player whose turn it *would* be
+            # win, lose or draw from that player's perspective
             outcome = utils.get_game_outcome(leaf_node.board_state)
             if outcome is not None:
-                # The value needs to be from the perspective of the player whose turn it was
-                # *at the parent* of the terminal node. Since the game ended here,
-                # the player who just moved led to this terminal state.
-                # If leaf_node.parent.board_state.turn == leaf_node.board_state.turn, something is wrong.
-                # The value should be relative to the player to move at the *leaf node*.
-                # get_game_outcome returns relative to the player whose turn it is in the *final* state.
-                # Let's adjust: if White wins (1.0), value is 1 if White is to move, -1 if Black.
-                # If Black wins (-1.0), value is 1 if Black is to move, -1 if White.
-                # Draw (0.0) is always 0.
-                # Simpler: outcome is from White's perspective (1=W win, -1=B win, 0=Draw)
-                # Value for backprop should be from the perspective of player to move at leaf.
-                if (
-                    leaf_node.board_state.turn == chess.WHITE
-                ):  # If it would be white's turn
+                if leaf_node.board_state.turn == chess.WHITE:
                     value = outcome
-                else:  # If it would be black's turn
+                else:
                     value = -outcome
 
-        # 3. Backpropagation: Update visit counts and Q-values along the search path.
-        # The value must be propagated back from the perspective of the player at each node.
-        leaf_node.update_recursive(value)  # Start backpropagation from the leaf
+        # backpropagation
+        leaf_node.update_recursive(value)
 
     # After simulations, choose the move based on visit counts (policy target)
     move_visits = []
