@@ -184,7 +184,7 @@ def run_training_iteration(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=4,  # Adjust based on your system
+        num_workers=1,  # Adjust based on your system
         pin_memory=torch.cuda.is_available(),
     )
 

@@ -109,7 +109,7 @@ def main():
         ]
 
         # Use multiprocessing pool for parallel game generation
-        num_workers = max(1, mp.cpu_count() // 2)
+        num_workers = max(1, mp.cpu_count() // 4)
         # num_workers = 1
 
         print(
