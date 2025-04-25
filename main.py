@@ -120,9 +120,9 @@ def main():
         if num_workers > 1:
             try:
                 # Set start method for multiprocessing if needed (e.g., 'spawn' for CUDA compatibility)
-                mp.set_start_method(
-                    "spawn", force=True
-                )  # Uncomment if facing CUDA issues with fork
+                # mp.set_start_method(
+                #     "spawn", force=True
+                # )  # Uncomment if facing CUDA issues with fork
                 with mp.Pool(processes=num_workers) as pool:
                     pool.map(run_self_play_worker, worker_args)
             except Exception as e:
