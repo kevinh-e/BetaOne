@@ -54,4 +54,4 @@ SAVE_DIR = "checkpoints"
 LOG_DIR = "logs"
 DATA_DIR = "data"
 
-print(f"Using device: {DEVICE}")
+# print(f"Using device: {DEVICE}")
