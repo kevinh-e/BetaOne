@@ -8,9 +8,12 @@ import os
 import torch
 import torch.optim as optim
 import multiprocessing as mp
-
 import config
 import glob
+import time
+from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
 from train import run_training_iteration, load_checkpoint
@@ -53,6 +56,8 @@ def main():
     os.makedirs(config.SAVE_DIR, exist_ok=True)
     os.makedirs(config.LOG_DIR, exist_ok=True)
     os.makedirs(config.DATA_DIR, exist_ok=True)
+
+    writer = SummaryWriter(log_dir=config.LOG_DIR)
 
     model = PolicyValueNet().to(config.DEVICE)
     optimizer = optim.AdamW(
@@ -100,7 +105,6 @@ def main():
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        # Determine number of games to play in this iteration
         # This could be fixed or adaptive
         num_games_this_iteration = 25
 
@@ -109,7 +113,7 @@ def main():
         ]
 
         # Use multiprocessing pool for parallel game generation
-        num_workers = max(1, mp.cpu_count() // 2)
+        num_workers = max(1, mp.cpu_count() // 4)
         # num_workers = 1
 
         print(
@@ -119,36 +123,50 @@ def main():
         # Clear old data for this iteration if necessary (optional)
         # shutil.rmtree(os.path.join(config.DATA_DIR, f"iter_{iteration}"), ignore_errors=True)
 
+        sp_start = time.time()
         if num_workers > 1:
             try:
-                # Set start method for multiprocessing if needed (e.g., 'spawn' for CUDA compatibility)
-                # mp.set_start_method(
-                #     "spawn", force=True
-                # )  # Uncomment if facing CUDA issues with fork
                 with mp.Pool(processes=num_workers) as pool:
-                    pool.map(run_self_play_worker, worker_args)
+                    list(
+                        tqdm(
+                            pool.imap_unordered(run_self_play_worker, worker_args),
+                            total=num_games_this_iteration,
+                            desc="Self-Play Games",
+                        )
+                    )
             except Exception as e:
-                print(f"Multiprocessing pool error: {e}")
-                print("Running self-play sequentially as fallback.")
+                print(
+                    f"Running self-play sequentially as fallback: Multiprocessing error {e}"
+                )
                 # Fallback to sequential execution if pool fails
-                for args in worker_args:
+                for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
                     run_self_play_worker(args)
         else:
             print("Running self-play sequentially...")
-            for args in worker_args:
+            for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
                 run_self_play_worker(args)
 
-        print("--- Self-Play Phase Finished ---")
+        sp_duration = time.time() - sp_start
+        print(f"--- Self-Play Phase Finished [{sp_duration:.2f}s] ---")
 
         # --- Step 2: Training ---
         print("\n--- Starting Training Phase ---")
-        run_training_iteration(model, optimizer, iteration)
-        print("--- Training Phase Finished ---")
+        tr_start = time.time()
+
+        run_training_iteration(model, optimizer, iteration, writer)
+
+        tr_duration = time.time() - tr_start
+        print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")
+
+        # --- Tensorboard ---
+        writer.add_scalar("Time/train_duration", tr_duration, iteration)
 
         # Optional Step 3: Evaluation against a baseline or previous checkpoint
         # (Not implemented in this stub)
 
     print("\n===== AlphaZero Chess Training Completed =====")
+
+    writer.close()
 
 
 if __name__ == "__main__":
