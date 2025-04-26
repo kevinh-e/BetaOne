@@ -14,6 +14,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 import config
 from network import PolicyValueNet
@@ -103,6 +105,8 @@ def train_network(
     optimizer: optim.Optimizer,
     data_loader: DataLoader,
     epoch: int,
+    writer: SummaryWriter,
+    global_step: int,
 ):
     """Runs one epoch of training. Returns average loss"""
     model.train()
@@ -111,7 +115,9 @@ def train_network(
     value_loss_accum = 0.0
     batch_count = 0
 
-    for batch_i, (states, target_policies, target_values) in enumerate(data_loader):
+    data_iterator = tqdm(data_loader, desc=f"Epoch {epoch + 1} Training", leave=False)
+
+    for batch_i, (states, target_policies, target_values) in enumerate(data_iterator):
         states = states.to(config.DEVICE)
         target_policies = target_policies.to(config.DEVICE)
         target_values = target_values.to(config.DEVICE)
@@ -135,27 +141,61 @@ def train_network(
         value_loss_accum += value_loss.item()
         batch_count += 1
 
-        if batch_i % 100 == 0:
-            print(
-                f"Epoch {epoch + 1}, Batch {batch_i}/{len(data_loader)}, "
-                f"Avg Loss: {total_loss_accum / batch_count:.4f} "
-                f"(Policy: {policy_loss_accum / batch_count:.4f}, Value: {value_loss_accum / batch_count:.4f})"
+        # --- Tensorboard ---
+        if global_step % 10 == 0:
+            writer.add_scalar("Loss/train_batch", loss.item(), global_step)
+            writer.add_scalar("Loss/policy_batch", policy_loss.item(), global_step)
+            writer.add_scalar("Loss/value_batch", value_loss.item(), global_step)
+
+            writer.add_scalar(
+                "LearningRate", optimizer.param_groups[0]["lr"], global_step
             )
 
-    avg_total_loss = total_loss_accum / batch_count
-    avg_policy_loss = policy_loss_accum / batch_count
-    avg_value_loss = value_loss_accum / batch_count
+        # --- tqdm ---
+        if data_iterator is not None:
+            data_iterator.set_postfix(
+                {
+                    "Loss": f"{total_loss_accum / batch_count:.4f}",
+                    "P_Loss": f"{policy_loss_accum / batch_count:.4f}",
+                    "V_Loss": f"{value_loss_accum / batch_count:.4f}",
+                },
+                refresh=True,
+            )
+
+        # --- CLI ---
+        # if batch_i % 100 == 0:
+        #     print(
+        #         f"Epoch {epoch + 1}, Batch {batch_i}/{len(data_loader)}, "
+        #         f"Avg Loss: {total_loss_accum / batch_count:.4f} "
+        #         f"(Policy: {policy_loss_accum / batch_count:.4f}, Value: {value_loss_accum / batch_count:.4f})"
+        #     )
+
+        global_step += 1
+
+    # --- Tensorboard (epochs) ---
+    avg_total_loss = total_loss_accum / batch_count if batch_count > 0 else 0
+    avg_policy_loss = policy_loss_accum / batch_count if batch_count > 0 else 0
+    avg_value_loss = value_loss_accum / batch_count if batch_count > 0 else 0
+
+    writer.add_scalar("Loss (epoch)/train_epoch", avg_total_loss, epoch + 1)
+    writer.add_scalar("Loss (epoch)/policy_epoch", avg_policy_loss, epoch + 1)
+    writer.add_scalar("Loss (epoch)/value_epoch", avg_value_loss, epoch + 1)
+
+    # CLI
     print(f"--- Epoch {epoch + 1} Finished ---")
     print(f"Average Training Loss: {avg_total_loss:.4f}")
     print(f"Average Policy Loss:   {avg_policy_loss:.4f}")
     print(f"Average Value Loss:    {avg_value_loss:.4f}")
     print("-------------------------")
 
-    return avg_total_loss
+    return global_step
 
 
 def run_training_iteration(
-    model: PolicyValueNet, optimizer: optim.Optimizer, iteration: int
+    model: PolicyValueNet,
+    optimizer: optim.Optimizer,
+    iteration: int,
+    writer: SummaryWriter,
 ):
     """
     Runs a full training iteration: loads data, trains for specified epochs
@@ -192,8 +232,13 @@ def run_training_iteration(
     print(
         f"Training model on {len(dataset)} examples for {config.EPOCHS_PER_ITERATION} epochs..."
     )
+
+    estimated_SPE = (len(dataset) + config.BATCH_SIZE - 1) // config.BATCH_SIZE
+    global_step = iteration * config.EPOCHS_PER_ITERATION * estimated_SPE
     for epoch in range(config.EPOCHS_PER_ITERATION):
-        train_network(model, optimizer, data_loader, epoch)
+        global_step = train_network(
+            model, optimizer, data_loader, epoch, writer, global_step
+        )
 
     print(f"===== Finished Training Iteration {iteration} =====")
 
