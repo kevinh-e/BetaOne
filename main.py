@@ -13,6 +13,7 @@ import glob
 import time
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
@@ -64,6 +65,12 @@ def main():
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
 
+    est_examples_pi = config.GAME_BUFFER_SIZE * 100
+    est_steps_pe = est_examples_pi + config.BATCH_SIZE - 1
+    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * est_steps_pe
+
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+
     # Try loading the 'best_model.pth' first, then specific checkpoints
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
     start_iter = 0
@@ -81,7 +88,9 @@ def main():
                 latest_checkpoint = max(
                     checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
                 )
-                start_iter = load_checkpoint(model, optimizer, latest_checkpoint)
+                start_iter = load_checkpoint(
+                    model, optimizer, scheduler, latest_checkpoint
+                )
             else:
                 print(
                     "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
@@ -155,7 +164,7 @@ def main():
         print("\n--- Starting Training Phase ---")
         tr_start = time.time()
 
-        run_training_iteration(model, optimizer, iteration, writer)
+        run_training_iteration(model, optimizer, scheduler, iteration, writer)
 
         tr_duration = time.time() - tr_start
         print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")
