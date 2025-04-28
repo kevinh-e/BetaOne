@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
 import config
@@ -103,6 +104,7 @@ def calculate_loss(
 def train_network(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
+    scheduler: CosineAnnealingLR,
     data_loader: DataLoader,
     epoch: int,
     writer: SummaryWriter,
@@ -110,10 +112,12 @@ def train_network(
 ):
     """Runs one epoch of training. Returns average loss"""
     model.train()
-    total_loss_accum = 0.0
-    policy_loss_accum = 0.0
-    value_loss_accum = 0.0
-    batch_count = 0
+    total_loss_accum, policy_loss_accum, value_loss_accum, batch_count = (
+        0.0,
+        0.0,
+        0.0,
+        0,
+    )
 
     data_iterator = tqdm(data_loader, desc=f"Epoch {epoch + 1} Training", leave=False)
 
@@ -135,6 +139,9 @@ def train_network(
         # Backward pass and optimise
         loss.backward()
         optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         total_loss_accum += loss.item()
         policy_loss_accum += policy_loss.item()
@@ -161,14 +168,6 @@ def train_network(
                 },
                 refresh=True,
             )
-
-        # --- CLI ---
-        # if batch_i % 100 == 0:
-        #     print(
-        #         f"Epoch {epoch + 1}, Batch {batch_i}/{len(data_loader)}, "
-        #         f"Avg Loss: {total_loss_accum / batch_count:.4f} "
-        #         f"(Policy: {policy_loss_accum / batch_count:.4f}, Value: {value_loss_accum / batch_count:.4f})"
-        #     )
 
         global_step += 1
 
@@ -224,7 +223,7 @@ def run_training_iteration(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=1,  # Adjust based on your system
+        num_workers=0,  # Adjust based on your system
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -284,45 +283,3 @@ def load_checkpoint(
     else:
         print(f"No checkpoint found at '{filename}'. Starting from scratch.")
     return start_iter
-
-
-# Example usage (within a larger main script)
-# if __name__ == "__main__":
-#     print("Running training example...")
-#     # Initialize model and optimizer
-#     model = PolicyValueNet().to(config.DEVICE)
-#     optimizer = optim.AdamW(
-#         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
-#     )
-#
-#     # Ensure directories exist
-#     os.makedirs(config.SAVE_DIR, exist_ok=True)
-#     os.makedirs(config.DATA_DIR, exist_ok=True)  # Need data dir too
-#
-#     # --- Mock Data Generation (Replace with actual self-play) ---
-#     # Create some dummy data for iteration 0 to test the training loop
-#     print("Generating mock data for testing...")
-#     mock_data_list: List[SelfPlayData] = []
-#     num_mock_samples = 512
-#     for _ in range(num_mock_samples):
-#         mock_state = torch.randn(
-#             config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE
-#         )
-#         mock_policy = np.random.rand(config.NUM_ACTIONS).astype(np.float32)
-#         mock_policy /= np.sum(mock_policy)  # Normalize
-#         mock_value = random.uniform(-1, 1)
-#         mock_data_list.append((mock_state, mock_policy, mock_value))
-#
-#     # Save mock data as if it came from self-play iteration 0
-#     mock_data_dir = os.path.join(config.DATA_DIR, "iter_0")
-#     os.makedirs(mock_data_dir, exist_ok=True)
-#     mock_filepath = os.path.join(mock_data_dir, "game_mock.pkl")
-#     with open(mock_filepath, "wb") as f:
-#         pickle.dump(mock_data_list, f)
-#     print(f"Saved {len(mock_data_list)} mock samples to {mock_filepath}")
-#     # --- End Mock Data Generation ---
-#
-#     # Run one training iteration using the mock data
-#     run_training_iteration(model, optimizer, iteration=0)
-#
-#     print("\nTraining example finished.")

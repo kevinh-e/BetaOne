@@ -37,16 +37,16 @@ DIRICHLET_ALPHA = 0.3  # Alpha value for Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 19  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
-EPOCHS_PER_ITERATION = 5  # Number of training epochs per self-play iteration
-NUM_ITERATIONS = 100  # Total number of training iterations (self-play -> train)
-CHECKPOINT_INTERVAL = 10  # Save model checkpoint every N iterations
+EPOCHS_PER_ITERATION = 20  # Number of training epochs per self-play iteration
+NUM_ITERATIONS = 80  # Total number of training iterations (self-play -> train)
+CHECKPOINT_INTERVAL = 2  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 50000  # Maximum number of games to store for training data
 
 # --- Paths ---

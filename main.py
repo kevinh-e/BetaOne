@@ -22,7 +22,7 @@ from train import run_training_iteration, load_checkpoint
 def run_self_play_worker(args):
     """Worker function for parallel self-play game generation."""
     model_weights_path, iteration, game_idx = args
-    print(f"Worker started for game {iteration}-{game_idx}")
+    tqdm.write(f"Worker started for game {iteration}-{game_idx}")
 
     model = PolicyValueNet().to(config.DEVICE)
     # Load latest model
@@ -41,11 +41,11 @@ def run_self_play_worker(args):
     # Save the generated data
     if game_data:
         save_game_data(game_data, iteration, game_id=game_idx)
-        print(
+        tqdm.write(
             f"Worker finished game {iteration}-{game_idx}, saved {len(game_data)} examples."
         )
     else:
-        print(f"Worker failed for game {iteration}-{game_idx}.")
+        tqdm.write(f"Worker failed for game {iteration}-{game_idx}.")
 
 
 def main():
@@ -78,7 +78,9 @@ def main():
                 glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
             )
             if checkpoint_files:
-                latest_checkpoint = checkpoint_files[-1]
+                latest_checkpoint = max(
+                    checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
+                )
                 start_iter = load_checkpoint(model, optimizer, latest_checkpoint)
             else:
                 print(
@@ -113,8 +115,8 @@ def main():
         ]
 
         # Use multiprocessing pool for parallel game generation
-        num_workers = max(1, mp.cpu_count() // 4)
-        # num_workers = 1
+        # num_workers = max(1, mp.cpu_count() // 4)
+        num_workers = 5
 
         print(
             f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
