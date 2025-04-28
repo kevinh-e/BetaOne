@@ -124,8 +124,8 @@ def main():
         ]
 
         # Use multiprocessing pool for parallel game generation
-        # num_workers = max(1, mp.cpu_count() // 4)
-        num_workers = 5
+        # num_workers = max(1, mp.cpu_count() // 2)
+        num_workers = 6
 
         print(
             f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
@@ -183,7 +183,7 @@ def main():
 if __name__ == "__main__":
     # Set multiprocessing start method globally if needed, especially for CUDA
     try:
-        mp.set_start_method("spawn")
+        mp.set_start_method("spawn", force=True)
     except RuntimeError:
         pass  # Already set or not needed
 

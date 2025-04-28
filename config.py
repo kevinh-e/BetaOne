@@ -28,7 +28,7 @@ INPUT_CHANNELS = 120
 NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
-NUM_SIMULATIONS = 100  # Number of MCTS simulations per move
+NUM_SIMULATIONS = 125  # Number of MCTS simulations per move
 CPUCT = 1.0  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
@@ -37,15 +37,15 @@ DIRICHLET_ALPHA = 0.3  # Alpha value for Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 13  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
 BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
-EPOCHS_PER_ITERATION = 20  # Number of training epochs per self-play iteration
-NUM_ITERATIONS = 80  # Total number of training iterations (self-play -> train)
+EPOCHS_PER_ITERATION = 25  # Number of training epochs per self-play iteration
+NUM_ITERATIONS = 100  # Total number of training iterations (self-play -> train)
 CHECKPOINT_INTERVAL = 2  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 50000  # Maximum number of games to store for training data
 
