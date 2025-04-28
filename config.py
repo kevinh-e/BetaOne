@@ -37,7 +37,7 @@ DIRICHLET_ALPHA = 0.3  # Alpha value for Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 13  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
