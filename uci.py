@@ -24,7 +24,7 @@ print = functools.partial(print, flush=True)
 engine_name = "BetaOne UCI"
 engine_author = "Katara S"
 
-model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
+model_path = os.path.join(config.SAVE_DIR, "stable_model.pth")
 if not os.path.exists(model_path):
     print(f"Error: Model not found at {model_path}", file=sys.stderr)
     sys.exit(1)

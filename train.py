@@ -56,7 +56,7 @@ def load_recent_data(iteration: int, num_past: int = 3) -> List[SelfPlayData]:
 
     print(f"Loading data from iterations [{start_iter} - {end_iter}]...")
 
-    for iter in range(start_iter, end_iter):
+    for iter in range(start_iter, end_iter + 1):
         data_dir = os.path.join(config.DATA_DIR, f"iter_{iter}")
         game_files_iterator = glob.glob(os.path.join(data_dir, "game_*.pkl"))
         game_files = list(game_files_iterator)
