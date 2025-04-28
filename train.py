@@ -77,6 +77,7 @@ def load_recent_data(iteration: int, num_past: int = 3) -> List[SelfPlayData]:
                         print(f"Warning: Invalid data format in {filepath}")
             except Exception as e:
                 print(f"Error loading game data from {filepath}: {e}")
+        gc.collect()
 
     return all_data
 
