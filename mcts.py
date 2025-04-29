@@ -4,6 +4,7 @@ Implementation of the Monte Carlo Tree Search (MCTS) algorithm.
 Uses the neural network to guide the search.
 """
 
+import enum
 import math
 import random
 import numpy as np
@@ -12,8 +13,10 @@ import chess
 from typing import Dict, Optional, Tuple, List
 
 import config
-import utils  # Assuming utils contains MCTSNode, RepetitionTracker
+import utils
 from network import PolicyValueNet
+
+_transposition_table = {}
 
 
 class MCTSNode:
@@ -34,11 +37,13 @@ class MCTSNode:
         self.children: Dict[chess.Move, "MCTSNode"] = {}
         # current board
         self.board_state = board_state.copy()
+        self.key = board_state._transposition_key()
 
         self.n_visits = 0  # this node's visit count
         self.q_value = 0.0  # board evaluation
         self.u_value = 0.0  # UCB
         self.prior_p = prior_p  # prior probability from the policy network
+        self.encoded_state: Optional[torch.Tensor] = None
 
     def expand(self, policy_probs: np.ndarray, legal_moves: List[chess.Move]):
         """
@@ -50,27 +55,28 @@ class MCTSNode:
                           (output from the policy head). Shape: (NUM_ACTIONS,).
             legal_moves: A list of legal chess.Move objects from the current state.
         """
-        if self.is_leaf():  # Only expand if not already expanded
-            for move in legal_moves:
-                if move not in self.children:
-                    try:  # Add try-except for move_to_index during expansion
-                        move_idx = utils.move_to_index(move)
-                        if 0 <= move_idx < len(policy_probs):
-                            # get policy from NN
-                            prior = policy_probs[move_idx]
+        max_children = int(
+            config.WIDEN_COEFF * math.sqrt(self.n_visits + 1) or len(legal_moves)
+        )
+        sorted_moves = sorted(
+            legal_moves,
+            key=lambda m: policy_probs[utils.move_to_index(m)],
+            reverse=True,
+        )[:max_children]
 
-                            # give the child the board state after the move
-                            child_board = self.board_state.copy()
-                            child_board.push(move)
-                            self.children[move] = MCTSNode(
-                                parent=self, prior_p=prior, board_state=child_board
-                            )
-                        # else: # Index out of bounds warning (less likely with correct NUM_ACTIONS)
-                        #     print(f"Warning: Move index {move_idx} out of bounds for policy_probs during expansion.")
-                    except ValueError as e:
-                        print(
-                            f"Warning: Error getting index for legal move {move.uci()} during expansion: {e}"
-                        )
+        for move in sorted_moves:
+            if move not in self.children:
+                child_board = self.board_state.copy()
+                child_board.push(move)
+                key = child_board._transposition_key()
+                if key in _transposition_table:
+                    node = _transposition_table[key]
+                    node.parent = self
+                else:
+                    prior = policy_probs[utils.move_to_index(move)]
+                    node = MCTSNode(parent=self, prior_p=prior, board_state=child_board)
+                    _transposition_table[key] = node
+                self.children[move] = node
 
     def select_child(
         self,
@@ -89,26 +95,23 @@ class MCTSNode:
         best_move = None
         best_child = None
 
-        # Ensure parent visit count is available for UCT calculation
-        # Use self visits if root
         parent_visits = self.parent.n_visits if self.parent else self.n_visits
-
-        # *** Check if there are children BEFORE calculating UCT ***
+        # Cannot select if no children
         if not self.children:
-            return None, None  # Cannot select if no children
-
-        # Handle case where parent_visits might be 0 initially
-        # Add small epsilon to parent_visits for sqrt calculation if 0
-        sqrt_parent_visits = math.sqrt(
-            parent_visits + 1e-6
-        )  # Add epsilon for stability
+            return None, None
+        sqrt_parent = math.sqrt(parent_visits + 1e-8)
 
         for move, child in self.children.items():
-            uct_score = child.get_uct_score(
-                parent_visits, sqrt_parent_visits
-            )  # Pass precomputed sqrt
-            if uct_score > best_score:
-                best_score = uct_score
+            # Q + U
+            if child.n_visits > 0:
+                q = child.q_value
+                u = config.CPUCT * child.prior_p * sqrt_parent / (1 + child.n_visits)
+            else:
+                q = 0.0
+                u = config.CPUCT * child.prior_p * sqrt_parent
+            score = q + u
+            if score > best_score:
+                best_score = score
                 best_move = move
                 best_child = child
 
@@ -123,24 +126,6 @@ class MCTSNode:
 
         return best_move, best_child
 
-    def get_uct_score(
-        self, parent_total_visits: int, sqrt_parent_visits: float
-    ) -> float:
-        """Calculates the UCT score for the edge leading to this node."""
-        if self.n_visits == 0:
-            # If a node hasn't been visited, Q is 0. U encourages exploration.
-            q_value = 0.0
-            # U = c * P * sqrt(N_parent) / (1 + N_child) -> c * P * sqrt(N_parent) when N_child=0
-            self.u_value = config.CPUCT * self.prior_p * sqrt_parent_visits
-        else:
-            q_value = self.q_value
-            # Full UCT formula: U = c * P * sqrt(N_parent) / (1 + N_child)
-            self.u_value = (
-                config.CPUCT * self.prior_p * sqrt_parent_visits / (1 + self.n_visits)
-            )
-
-        return q_value + self.u_value
-
     def update(self, value: float):
         """
         Updates the node's statistics after a simulation backpropagates through it.
@@ -150,8 +135,7 @@ class MCTSNode:
                    of the player whose turn it was *at this node*.
         """
         self.n_visits += 1
-        # Q value is the average of simulation outcomes seen so far
-        # Q(s, a) = Q(s, a) + (v - Q(s, a)) / N(s, a)
+        # incremental mean
         self.q_value += (value - self.q_value) / self.n_visits
 
     def update_recursive(self, value: float):
@@ -163,19 +147,17 @@ class MCTSNode:
             value: The outcome of the simulation from the perspective of the player
                    whose turn it was at the *leaf node* of the simulation.
         """
-        # Update this node first
         self.update(value)
-        # Then update parent with negated value
+        # update parent with negated value
         if self.parent:
             self.parent.update_recursive(-value)
 
     def is_leaf(self) -> bool:
         """Checks if the node is a leaf node (has no children)."""
-        return not self.children
+        return len(self.children) == 0
 
     def is_terminal(self) -> bool:
         """Checks if the node represents a terminal game state."""
-        # Use claim_draw=True to catch draws like insufficient material
         return self.board_state.is_game_over(claim_draw=True)
 
 
@@ -200,175 +182,119 @@ def run_mcts(
         - move_probs: The improved policy (visit counts normalized) after MCTS.
                       Shape: (NUM_ACTIONS,).
     """
-    root = MCTSNode(parent=None, prior_p=1.0, board_state=root_board)
+    root_key = root_board._transposition_key()
+    if root_key in _transposition_table:
+        root = _transposition_table[root_key]
+        root.parent = None
+    else:
+        root = MCTSNode(parent=None, prior_p=1.0, board_state=root_board)
+        _transposition_table[root_key] = root
 
     # --- Initial Root Expansion ---
     if not root.is_terminal():
-        # *** FIX: History for root encoding needs to include root_board ***
-        history_for_root_encoding = (history + [root.board_state])[
-            -8:
-        ]  # Slice ensures max 8 states
+        history_enc = (history + [root.board_state])[-8:]
+        root.encoded_state = utils.encode_board(root.board_state, history_enc, tracker)
 
-        encoded_state = (
-            utils.encode_board(
-                root.board_state, history_for_root_encoding, tracker
-            )  # Pass correctly sliced history
-            .unsqueeze(0)
-            .to(config.DEVICE)
-        )
-        with torch.no_grad():
-            policy_logits, value = model(encoded_state)
-        policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
+        with torch.no_grad(), torch.autocast(config.DEVICE):
+            logits, value = model(root.encoded_state.unsqueeze(0).to(config.DEVICE))
+        policy_probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+        root.expand(policy_probs, list(root.board_state.legal_moves))
+        value = value.item()
 
-        # Add Dirichlet noise (ensure noise array size matches num legal moves)
+        # Add Dirichlet noise
         if config.DIRICHLET_ALPHA > 0:
-            legal_moves_list = list(root.board_state.legal_moves)  # Get list once
-            legal_mask = utils.get_legal_mask(root.board_state).numpy()
-            num_legal_moves = int(np.sum(legal_mask))
-            if num_legal_moves > 0:
-                noise_values = np.random.dirichlet(
-                    [config.DIRICHLET_ALPHA] * num_legal_moves
-                )
-                noisy_policy = policy_probs.copy()
-                noise_idx = 0
-                for i in range(len(policy_probs)):
-                    if legal_mask[i]:
-                        if noise_idx < len(noise_values):  # Boundary check for safety
-                            noisy_policy[i] = (
-                                1 - config.DIRICHLET_EPSILON
-                            ) * policy_probs[
-                                i
-                            ] + config.DIRICHLET_EPSILON * noise_values[noise_idx]
-                            noise_idx += 1
-                        else:
-                            print(
-                                f"Warning: Noise index {noise_idx} out of bounds for noise array size {len(noise_values)}"
-                            )
-                # Re-normalize after noise
-                sum_noisy_policy = np.sum(noisy_policy)
-                if sum_noisy_policy > 1e-9:
-                    policy_probs = noisy_policy / sum_noisy_policy
-                else:
-                    # Fallback if sum is zero (unlikely)
-                    policy_probs = (
-                        torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
-                    )  # Use original
+            legal = list(root.board_state.legal_moves)
+            noise = np.random.dirichlet([config.DIRICHLET_ALPHA] * len(legal))
 
-        root.expand(
-            policy_probs, list(root.board_state.legal_moves)
-        )  # Pass legal moves list again
+            for i, move in enumerate(legal):
+                idx = utils.move_to_index(move)
+                policy_probs[idx] = (1 - config.DIRICHLET_EPSILON) * policy_probs[
+                    idx
+                ] + config.DIRICHLET_EPSILON * noise[i]
+
+            # Re-normalize
+            policy_probs = policy_probs / (policy_probs.sum() + 1e-12)
+
+        root.expand(policy_probs, list(root.board_state.legal_moves))
+
+    # Batched simulations
+    pending_nodes = []
+    pending_paths = []
 
     # --- MCTS Simulation Loop ---
     for _ in range(config.NUM_SIMULATIONS):
         node = root
-        search_path = [node]
-        # History for simulation starts with history including root
-        sim_history = history + [root.board_state]  # Start with history INCLUDING root
+        path = [node]
 
         # 1. Selection
         while not node.is_leaf():
             move, next_node = node.select_child()
-
             if next_node is None:
-                # This means node is a leaf or has no selectable children
-                # print(f"Warning: Selection returned None node from node {node.board_state.fen()}. Treating as leaf.")
-                break  # Stop selection, treat current 'node' as leaf
-
-            # Append state AFTER move to simulation history
-            sim_history.append(next_node.board_state.copy())
-
+                break
             node = next_node
-            search_path.append(node)
+            path.append(node)
 
-        leaf_node = node
+        leaf = node
 
-        # 2. Expansion & Evaluation
-        value = 0.0  # Default value for backpropagation
+        # 2. Terminal -> Backprop
+        if leaf.is_terminal():
+            outcome = utils.get_game_outcome(leaf.board_state) or 0.0
+            leaf.update_recursive(outcome)
+            continue
 
-        if not leaf_node.is_terminal():
-            # *** FIX: Slice history for leaf node encoding ***
-            history_for_leaf_encoding = sim_history[
-                -8:
-            ]  # Get last 8 states for encoding
-
-            encoded_state = (
-                utils.encode_board(
-                    leaf_node.board_state, history_for_leaf_encoding, tracker
-                )  # Pass SLICED history
-                .unsqueeze(0)
-                .to(config.DEVICE)
+        # 3. Prepare leaf for batch
+        if leaf.encoded_state is None:
+            history_enc = (history + [leaf.board_state])[-8:]
+            leaf.encoded_state = utils.encode_board(
+                leaf.board_state, history_enc, tracker
             )
-            with torch.no_grad():
-                policy_logits, network_value = model(encoded_state)
-            policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
-            value = (
-                network_value.item()
-            )  # Value from network (perspective of player to move at leaf)
 
-            # Expand the leaf node
-            leaf_node.expand(policy_probs, list(leaf_node.board_state.legal_moves))
-        else:
-            # If the leaf node IS terminal, get actual game outcome
-            # Outcome is from perspective of player who *just moved*
-            outcome = utils.get_game_outcome(leaf_node.board_state)
-            if outcome is not None:
-                value = outcome  # Use this directly for backpropagation
-            # else: value remains 0.0
+        pending_paths.append(path)
+        pending_nodes.append(leaf)
 
-        # 3. Backpropagation
-        # Update stats starting from leaf, propagating upwards with negated value
-        leaf_node.update_recursive(value)
+        # 4. If batch is full run network
+        if len(pending_nodes) >= config.MCTS_BATCH_SIZE:
+            _evaluate_batch(pending_nodes, pending_paths, model)
+            pending_nodes.clear()
+            pending_paths.clear()
 
-    # --- After all simulations ---
-    # Choose move based on visit counts
-    move_visits = []
+    if pending_nodes:
+        _evaluate_batch(pending_nodes, pending_paths, model)
+
+    # 4. best move selection + build pi
     legal_moves = list(root.board_state.legal_moves)
+    visits = [
+        (move, root.children.get(move, MCTSNode(None, 0, root.board_state)).n_visits)
+        for move in legal_moves
+    ]
 
-    if not legal_moves:
-        # print(f"Warning: No legal moves from root node {root.board_state.fen()}. Game likely over.")
-        return None, np.zeros(config.NUM_ACTIONS)
-
-    for move in legal_moves:
-        if move in root.children:
-            move_visits.append((move, root.children[move].n_visits))
-        else:
-            move_visits.append((move, 0))  # Assign 0 visits if not explored
-
-    total_visits = sum(visits for _, visits in move_visits)
+    total = sum(v for _, v in visits)
     pi = np.zeros(config.NUM_ACTIONS, dtype=np.float32)
 
-    if total_visits > 0:
-        for move, visits in move_visits:
-            try:
-                move_idx = utils.move_to_index(move)
-                if 0 <= move_idx < config.NUM_ACTIONS:
-                    pi[move_idx] = visits / total_visits
-            except ValueError as e:
-                print(
-                    f"Error getting index for legal move {move.uci()} during policy calculation: {e}"
-                )
-    else:  # Fallback if no visits (e.g., root is terminal, low sims)
-        num_legal = len(legal_moves)
-        if num_legal > 0:
-            prob = 1.0 / num_legal
-            for move in legal_moves:
-                try:
-                    move_idx = utils.move_to_index(move)
-                    if 0 <= move_idx < config.NUM_ACTIONS:
-                        pi[move_idx] = prob
-                except ValueError as e:
-                    print(
-                        f"Error getting index for legal move {move.uci()} during fallback policy calculation: {e}"
-                    )
-
-    # Select best move based on visits
-    if move_visits:
-        # Sort by visits descending, then maybe by prior probability as tie-breaker?
-        # For now, just max visits.
-        best_move = max(move_visits, key=lambda item: item[1])[0]
+    if total > 0:
+        for move, count in visits:
+            idx = utils.move_to_index(move)
+            if 0 <= idx < config.NUM_ACTIONS:
+                pi[idx] = count / total
     else:
-        # Should be covered by legal_moves check, but as a safeguard
-        print("Error: No move visits recorded despite having legal moves?")
-        return None, pi  # No best move determinable
-
+        for move in legal_moves:
+            idx = utils.move_to_index(move)
+            if 0 <= idx < config.NUM_ACTIONS:
+                pi[idx] = 1.0 / len(legal_moves)
+    best_move = max(visits, key=lambda x: x[1])[0]
     return best_move, pi
+
+
+def _evaluate_batch(nodes, paths, model):
+    batch = torch.stack([n.encoded_state for n in nodes], dim=0).to(config.DEVICE)
+    with torch.no_grad(), torch.autocast(config.DEVICE):
+        logits, values = model(batch)
+    policy_batch = torch.softmax(logits, dim=1).cpu().numpy()
+    values = values.squeeze(1).cpu().numpy()
+
+    # expand and backprop
+    for leaf, path, probs, val in zip(nodes, paths, policy_batch, values):
+        legal = list(leaf.board_state.legal_moves)
+        leaf.expand(probs, legal)
+
+        leaf.update_recursive(val)

@@ -7,6 +7,7 @@ import torch
 
 # --- Hardware ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+USE_AMP = torch.cuda.is_available()
 
 # --- Chess Game ---
 BOARD_SIZE = 8
@@ -33,20 +34,25 @@ CPUCT = 1.0  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
 TEMPERATURE_THRESHOLD = 30  # Move number after which temperature changes
-DIRICHLET_ALPHA = 0.3  # Alpha value for Dirichlet noise
+DIRICHLET_ALPHA = 0.03  # Alpha value for Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
+WIDEN_COEFF = 1.5
+MCTS_BATCH_SIZE = 32
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 19  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
-BATCH_SIZE = 256
+NUM_WORKERS = 5
+GAMES_MINIMUM = 25
+
+BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
-EPOCHS_PER_ITERATION = 5  # Number of training epochs per self-play iteration
+EPOCHS_PER_ITERATION = 25  # Number of training epochs per self-play iteration
 NUM_ITERATIONS = 100  # Total number of training iterations (self-play -> train)
-CHECKPOINT_INTERVAL = 10  # Save model checkpoint every N iterations
+CHECKPOINT_INTERVAL = 1  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 50000  # Maximum number of games to store for training data
 
 # --- Paths ---

@@ -102,6 +102,10 @@ class RepetitionTracker:
         """Returns the raw count for a given board state."""
         return self.counts[board._transposition_key()]
 
+    def reset(self):
+        """Resets the tracker"""
+        self.counts.clear()
+
 
 # --- Board Encoding ---
 def encode_board(

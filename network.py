@@ -120,27 +120,3 @@ class PolicyValueNet(nn.Module):
         value = torch.tanh(self.value_fc2(value))  # Output between -1 and 1
 
         return policy_logits, value
-
-
-# Example usage
-# if __name__ == "__main__":
-#     # Create a dummy input tensor
-#     dummy_input = torch.randn(
-#         config.BATCH_SIZE, config.INPUT_CHANNELS, config.BOARD_SIZE, config.BOARD_SIZE
-#     ).to(config.DEVICE)
-#
-#     # Instantiate the network
-#     model = PolicyValueNet().to(config.DEVICE)
-#     model.eval()  # Set to evaluation mode
-#
-#     # Perform a forward pass
-#     with torch.no_grad():
-#         policy_logits, value = model(dummy_input)
-#
-#     print("Input shape:", dummy_input.shape)
-#     print("Policy logits shape:", policy_logits.shape)
-#     print("Value shape:", value.shape)
-#     print(
-#         "Sample Policy Logits:", policy_logits[0, :10].cpu().numpy()
-#     )  # First 10 actions for first batch item
-#     print("Sample Value:", value[0].item())

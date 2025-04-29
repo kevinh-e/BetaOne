@@ -5,14 +5,17 @@ Orchestrates self-play, training, and potentially evaluation.
 """
 
 import os
+from numpy import ceil
 import torch
 import torch.optim as optim
 import multiprocessing as mp
+import torch.backends.cudnn as cudnn
 import config
 import glob
 import time
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
@@ -22,7 +25,7 @@ from train import run_training_iteration, load_checkpoint
 def run_self_play_worker(args):
     """Worker function for parallel self-play game generation."""
     model_weights_path, iteration, game_idx = args
-    print(f"Worker started for game {iteration}-{game_idx}")
+    tqdm.write(f"Worker started for game {iteration}-{game_idx}")
 
     model = PolicyValueNet().to(config.DEVICE)
     # Load latest model
@@ -41,15 +44,16 @@ def run_self_play_worker(args):
     # Save the generated data
     if game_data:
         save_game_data(game_data, iteration, game_id=game_idx)
-        print(
+        tqdm.write(
             f"Worker finished game {iteration}-{game_idx}, saved {len(game_data)} examples."
         )
     else:
-        print(f"Worker failed for game {iteration}-{game_idx}.")
+        tqdm.write(f"Worker failed for game {iteration}-{game_idx}.")
 
 
 def main():
     """Main function to execute the training loop."""
+    cudnn.benchmark = True
     print("Starting AlphaZero Chess Training...")
     print(f"Using device: {config.DEVICE}")
 
@@ -63,6 +67,12 @@ def main():
     optimizer = optim.AdamW(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
+
+    est_examples_pi = config.GAME_BUFFER_SIZE * 100
+    est_steps_pe = est_examples_pi + config.BATCH_SIZE - 1
+    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * est_steps_pe
+
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
 
     # Try loading the 'best_model.pth' first, then specific checkpoints
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
@@ -78,8 +88,12 @@ def main():
                 glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
             )
             if checkpoint_files:
-                latest_checkpoint = checkpoint_files[-1]
-                start_iter = load_checkpoint(model, optimizer, latest_checkpoint)
+                latest_checkpoint = max(
+                    checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
+                )
+                start_iter = load_checkpoint(
+                    model, optimizer, scheduler, latest_checkpoint
+                )
             else:
                 print(
                     "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
@@ -105,16 +119,17 @@ def main():
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        # This could be fixed or adaptive
-        num_games_this_iteration = 25
+        num_workers = config.NUM_WORKERS
+        num_games_this_iteration = int(
+            num_workers * ceil(config.GAMES_MINIMUM / num_workers)
+        )
 
         worker_args = [
             (current_model_path, iteration, i) for i in range(num_games_this_iteration)
         ]
 
         # Use multiprocessing pool for parallel game generation
-        num_workers = max(1, mp.cpu_count() // 4)
-        # num_workers = 1
+        # num_workers = max(1, mp.cpu_count() // 2)
 
         print(
             f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
@@ -153,7 +168,7 @@ def main():
         print("\n--- Starting Training Phase ---")
         tr_start = time.time()
 
-        run_training_iteration(model, optimizer, iteration, writer)
+        run_training_iteration(model, optimizer, scheduler, iteration, writer)
 
         tr_duration = time.time() - tr_start
         print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")
@@ -172,7 +187,7 @@ def main():
 if __name__ == "__main__":
     # Set multiprocessing start method globally if needed, especially for CUDA
     try:
-        mp.set_start_method("spawn")
+        mp.set_start_method("spawn", force=True)
     except RuntimeError:
         pass  # Already set or not needed
 
