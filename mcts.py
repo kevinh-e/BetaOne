@@ -4,7 +4,6 @@ Implementation of the Monte Carlo Tree Search (MCTS) algorithm.
 Uses the neural network to guide the search.
 """
 
-# import enum
 import math
 import random
 import numpy as np

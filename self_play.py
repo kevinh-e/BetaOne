@@ -9,9 +9,8 @@ import time
 import chess
 import numpy as np
 import torch
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 import pickle
-import random
 
 import config
 import utils
