@@ -171,7 +171,7 @@ def run_self_play_game(
         try:
             board.push(played_move)  # Push onto the main board
         except AssertionError as e:
-            print(f"\n!!! AssertionError during board.push() !!!")
+            print("\n!!! AssertionError during board.push() !!!")
             print(
                 f"  Game ID: {game_id}, Move Number: {move_number}, FEN: {current_fen}"
             )
