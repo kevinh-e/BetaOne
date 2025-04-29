@@ -29,7 +29,7 @@ INPUT_CHANNELS = 120
 NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
-NUM_SIMULATIONS = 100  # Number of MCTS simulations per move
+NUM_SIMULATIONS = 125  # Number of MCTS simulations per move
 CPUCT = 1.0  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
@@ -44,9 +44,10 @@ RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
-NUM_WORKERS = 5
+NUM_WORKERS = 1
 GAMES_MINIMUM = 25
 
+MAX_GAME_MOVES = 512
 BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4

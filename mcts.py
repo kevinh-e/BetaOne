@@ -11,6 +11,8 @@ import numpy as np
 import torch
 import chess
 from typing import Dict, Optional, Tuple, List
+from tqdm import trange
+from tqdm import tqdm
 
 import config
 import utils
@@ -154,7 +156,7 @@ class MCTSNode:
 
     def is_leaf(self) -> bool:
         """Checks if the node is a leaf node (has no children)."""
-        return len(self.children) == 0
+        return not self.children
 
     def is_terminal(self) -> bool:
         """Checks if the node represents a terminal game state."""
@@ -182,6 +184,8 @@ def run_mcts(
         - move_probs: The improved policy (visit counts normalized) after MCTS.
                       Shape: (NUM_ACTIONS,).
     """
+    if len(_transposition_table) > 100000:
+        _transposition_table.clear()
     root_key = root_board._transposition_key()
     if root_key in _transposition_table:
         root = _transposition_table[root_key]
@@ -222,17 +226,29 @@ def run_mcts(
     pending_paths = []
 
     # --- MCTS Simulation Loop ---
-    for _ in range(config.NUM_SIMULATIONS):
+    for _ in trange(config.NUM_SIMULATIONS, desc="MCTSe sims", unit="sim", leave=False):
         node = root
         path = [node]
 
+        max_depth = 50000
+        depth = 0
         # 1. Selection
-        while not node.is_leaf():
-            move, next_node = node.select_child()
-            if next_node is None:
-                break
-            node = next_node
-            path.append(node)
+        with tqdm(desc="Selection", unit="step", leave=False, position=1) as sel_bar:
+            while not node.is_leaf():
+                move, next_node = node.select_child()
+                if next_node is node:
+                    print("Warning select_child returned the same node")
+                    break
+                if next_node is None:
+                    break
+                node = next_node
+                path.append(node)
+                depth += 1
+                if depth >= max_depth:
+                    print("Warning max selection depth reached")
+                    break
+
+                sel_bar.update(1)
 
         leaf = node
 

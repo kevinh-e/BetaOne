@@ -97,8 +97,11 @@ def run_self_play_game(
     board_history: List[chess.Board] = [board.copy()]
 
     start_time = time.time()
+    move_count = 0
 
-    while not board.is_game_over(claim_draw=True):
+    while (
+        not board.is_game_over(claim_draw=True) and move_count < config.MAX_GAME_MOVES
+    ):
         move_number = board.fullmove_number
         current_fen = board.fen()
         current_turn = "White" if board.turn == chess.WHITE else "Black"
@@ -180,6 +183,9 @@ def run_self_play_game(
         tracker.add_board(board)  # Add the new board state to the tracker counts
 
         board_history.append(board.copy())  # Add new state to history
+        move_count += 1
+    if move_count >= config.MAX_GAME_MOVES:
+        print(f"Game {game_id} aborted after {move_count} moves (max).")
 
     # --- Game Finished ---
     outcome = utils.get_game_outcome(board)
