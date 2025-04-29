@@ -40,7 +40,7 @@ WIDEN_COEFF = 1.5
 MCTS_BATCH_SIZE = 32
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 19  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
