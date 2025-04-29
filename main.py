@@ -120,8 +120,8 @@ def main():
             torch.save(model.state_dict(), current_model_path)
 
         num_workers = config.NUM_WORKERS
-        num_games_this_iteration = num_workers * ceil(
-            config.GAMES_MINIMUM / num_workers
+        num_games_this_iteration = int(
+            num_workers * ceil(config.GAMES_MINIMUM / num_workers)
         )
 
         worker_args = [

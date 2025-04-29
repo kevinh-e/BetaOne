@@ -29,7 +29,7 @@ INPUT_CHANNELS = 120
 NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
-NUM_SIMULATIONS = 50  # Number of MCTS simulations per move
+NUM_SIMULATIONS = 100  # Number of MCTS simulations per move
 CPUCT = 1.0  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
