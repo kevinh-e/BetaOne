@@ -6,6 +6,7 @@ Orchestrates self-play, training, and potentially evaluation.
 
 import os
 from numpy import ceil
+import numpy
 import torch
 import torch.optim as optim
 import multiprocessing as mp
@@ -68,9 +69,8 @@ def main():
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
 
-    est_examples_pi = config.GAME_BUFFER_SIZE * 100
-    est_steps_pe = est_examples_pi + config.BATCH_SIZE - 1
-    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * est_steps_pe
+    steps_per_epoch = numpy.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
+    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
 
     scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
 
