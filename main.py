@@ -141,7 +141,7 @@ def main():
         sp_start = time.time()
         if num_workers > 1:
             try:
-                with mp.Pool(processes=num_workers, maxtasksperchild=1) as pool:
+                with mp.Pool(processes=num_workers) as pool:
                     list(
                         tqdm(
                             pool.imap_unordered(run_self_play_worker, worker_args),

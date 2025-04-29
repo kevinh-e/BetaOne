@@ -44,7 +44,7 @@ RESIDUAL_BLOCKS = 12  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
-NUM_WORKERS = 1
+NUM_WORKERS = 5
 GAMES_MINIMUM = 25
 
 MAX_GAME_MOVES = 512

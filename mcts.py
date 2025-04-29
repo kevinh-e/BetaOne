@@ -4,21 +4,17 @@ Implementation of the Monte Carlo Tree Search (MCTS) algorithm.
 Uses the neural network to guide the search.
 """
 
-import enum
+# import enum
 import math
 import random
 import numpy as np
 import torch
 import chess
 from typing import Dict, Optional, Tuple, List
-from tqdm import trange
-from tqdm import tqdm
 
 import config
 import utils
 from network import PolicyValueNet
-
-_transposition_table = {}
 
 
 class MCTSNode:
@@ -70,14 +66,8 @@ class MCTSNode:
             if move not in self.children:
                 child_board = self.board_state.copy()
                 child_board.push(move)
-                key = child_board._transposition_key()
-                if key in _transposition_table:
-                    node = _transposition_table[key]
-                    node.parent = self
-                else:
-                    prior = policy_probs[utils.move_to_index(move)]
-                    node = MCTSNode(parent=self, prior_p=prior, board_state=child_board)
-                    _transposition_table[key] = node
+                prior = policy_probs[utils.move_to_index(move)]
+                node = MCTSNode(parent=self, prior_p=prior, board_state=child_board)
                 self.children[move] = node
 
     def select_child(
@@ -184,15 +174,7 @@ def run_mcts(
         - move_probs: The improved policy (visit counts normalized) after MCTS.
                       Shape: (NUM_ACTIONS,).
     """
-    if len(_transposition_table) > 100000:
-        _transposition_table.clear()
-    root_key = root_board._transposition_key()
-    if root_key in _transposition_table:
-        root = _transposition_table[root_key]
-        root.parent = None
-    else:
-        root = MCTSNode(parent=None, prior_p=1.0, board_state=root_board)
-        _transposition_table[root_key] = root
+    root = MCTSNode(parent=None, prior_p=1.0, board_state=root_board)
 
     # --- Initial Root Expansion ---
     if not root.is_terminal():
@@ -226,29 +208,27 @@ def run_mcts(
     pending_paths = []
 
     # --- MCTS Simulation Loop ---
-    for _ in trange(config.NUM_SIMULATIONS, desc="MCTSe sims", unit="sim", leave=False):
+    for _ in range(config.NUM_SIMULATIONS):
         node = root
         path = [node]
 
-        max_depth = 50000
+        max_depth = 1000000
         depth = 0
-        # 1. Selection
-        with tqdm(desc="Selection", unit="step", leave=False, position=1) as sel_bar:
-            while not node.is_leaf():
-                move, next_node = node.select_child()
-                if next_node is node:
-                    print("Warning select_child returned the same node")
-                    break
-                if next_node is None:
-                    break
-                node = next_node
-                path.append(node)
-                depth += 1
-                if depth >= max_depth:
-                    print("Warning max selection depth reached")
-                    break
 
-                sel_bar.update(1)
+        # 1. Selection
+        while not node.is_leaf():
+            move, next_node = node.select_child()
+            if next_node is node:
+                print("Warning select_child returned the same node")
+                break
+            if next_node is None:
+                break
+            node = next_node
+            path.append(node)
+            depth += 1
+            if depth >= max_depth:
+                print("Warning max selection depth reached")
+                break
 
         leaf = node
 
