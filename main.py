@@ -5,9 +5,11 @@ Orchestrates self-play, training, and potentially evaluation.
 """
 
 import os
+from numpy import ceil
 import torch
 import torch.optim as optim
 import multiprocessing as mp
+import torch.backends.cudnn as cudnn
 import config
 import glob
 import time
@@ -51,6 +53,7 @@ def run_self_play_worker(args):
 
 def main():
     """Main function to execute the training loop."""
+    cudnn.benchmark = True
     print("Starting AlphaZero Chess Training...")
     print(f"Using device: {config.DEVICE}")
 
@@ -116,8 +119,10 @@ def main():
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        # This could be fixed or adaptive
-        num_games_this_iteration = 25
+        num_workers = config.NUM_WORKERS
+        num_games_this_iteration = num_workers * ceil(
+            config.GAMES_MINIMUM / num_workers
+        )
 
         worker_args = [
             (current_model_path, iteration, i) for i in range(num_games_this_iteration)
@@ -125,7 +130,6 @@ def main():
 
         # Use multiprocessing pool for parallel game generation
         # num_workers = max(1, mp.cpu_count() // 2)
-        num_workers = 6
 
         print(
             f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."

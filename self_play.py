@@ -14,15 +14,15 @@ import pickle
 import random
 
 import config
-import utils  # Assuming utils contains REVISED RepetitionTracker
+import utils
 from network import PolicyValueNet
-from mcts import run_mcts  # Import the corrected run_mcts
+from mcts import run_mcts
 
 # Define the structure for storing game data
 SelfPlayData = Tuple[torch.Tensor, np.ndarray, float]
 
 
-# --- apply_temperature and select_move_with_temperature (Keep corrected versions) ---
+# --- apply_temperature and select_move_with_temperature ---
 def apply_temperature(probs: np.ndarray, temperature: float) -> np.ndarray:
     """Applies temperature scaling to probabilities."""
     if temperature == 0:
@@ -90,7 +90,6 @@ def run_self_play_game(
     Uses the revised RepetitionTracker.
     """
     board = chess.Board()
-    # *** FIX: Initialize revised tracker and add initial state ***
     tracker = utils.RepetitionTracker()
     tracker.add_board(board)  # Manually add the initial board state count
 
@@ -106,7 +105,6 @@ def run_self_play_game(
 
         # --- Run MCTS ---
         history_for_mcts_root = board_history[max(0, len(board_history) - 8) : -1]
-        # *** FIX: Pass the tracker object, MCTS/encode_board will use tracker.repetitions() ***
         best_move, mcts_policy = run_mcts(board, model, history_for_mcts_root, tracker)
 
         if best_move is None:
@@ -179,7 +177,6 @@ def run_self_play_game(
             )
             return None
 
-        # *** FIX: Update tracker AFTER pushing onto the main board ***
         tracker.add_board(board)  # Add the new board state to the tracker counts
 
         board_history.append(board.copy())  # Add new state to history
@@ -200,7 +197,6 @@ def run_self_play_game(
         perspective_outcome = outcome if state_board.turn == chess.WHITE else -outcome
         history_slice_for_training = board_history[max(0, i + 1 - 8) : i + 1]
         try:
-            # *** FIX: Pass the tracker object, encode_board uses tracker.repetitions() ***
             encoded_state = utils.encode_board(
                 state_board, history_slice_for_training, tracker
             )
