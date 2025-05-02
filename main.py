@@ -6,7 +6,7 @@ Orchestrates self-play, training, and potentially evaluation.
 
 import os
 from numpy import ceil
-import numpy
+import math
 import torch
 import torch.optim as optim
 import multiprocessing as mp
@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
-from train import run_training_iteration, load_checkpoint
+from train import run_training_iteration, run_pretraining, load_checkpoint
 
 
 def run_self_play_worker(args):
@@ -68,9 +68,12 @@ def main():
     optimizer = optim.AdamW(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
-    scheduler = CosineAnnealingLR(
-        optimizer, 1, eta_min=config.LR_MIN
-    )
+
+    # scheduler (self-play)
+    steps_per_epoch = math.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
+    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
+    scheduler = CosineAnnealingLR(optimizer, 1, eta_min=config.LR_MIN)
+
     scaler = torch.GradScaler(config.DEVICE)
 
     # TODO: Try load pretrained weights, then 'best_model.pth', then checkpoints
@@ -79,9 +82,7 @@ def main():
     pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
     if os.path.exists(best_model_path):
         print(f"Loading weights from {best_model_path}")
-        model.load_state_dict(
-            torch.load(best_model_path, map_location=config.DEVICE)
-        )
+        model.load_state_dict(torch.load(best_model_path, map_location=config.DEVICE))
         # Find the latest checkpoint to potentially resume optimizer state and iteration count
         checkpoint_files = sorted(
             glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
@@ -90,30 +91,37 @@ def main():
             latest_checkpoint = max(
                 checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
             )
-            start_iter = load_checkpoint(
-                model, optimizer, scheduler, latest_checkpoint
-            )
+            start_iter = load_checkpoint(model, optimizer, scheduler, latest_checkpoint)
         else:
             print(
                 "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
             )
+            start_iter = 0
+            scheduler = CosineAnnealingLR(
+                optimizer, T_max=total_steps, eta_min=config.LR_MIN
+            )
     elif os.path.exists(pretrained_path):
         # load pretrained weights
         try:
-            model.load_state_dict(torch.load(pretrained_path, map_location=config.DEVICE))
-            print(f"Loaded pretrained weights")
+            model.load_state_dict(
+                torch.load(pretrained_path, map_location=config.DEVICE)
+            )
+            print("Loaded pretrained weights")
             # skip pretraining
             start_iter = 0
-        except:
-            pass
+        except Exception as e:
+            print(f"Loading pretrained model error: {e}")
 
+    # --- Supervised Pre-Training --
     if start_iter == -1:
-    # --- Supervised Pre-Training -- 
-    for epoch in config.NUM_EPOCHS:
+        # init scheduler for pretraining
+        scheduler = CosineAnnealingLR(
+            optimizer, config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
+        )
+        run_pretraining(model, optimizer, scheduler, scaler, writer)
 
-
-    # reset scheduler
-    scheduler.last_epoch = 1
+        # reset scheduler after pretraining
+        scheduler.last_epoch = 1
 
     # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
@@ -164,7 +172,7 @@ def main():
         print("\n--- Starting Training Phase ---")
         tr_start = time.time()
 
-        run_training_iteration(model, optimizer, scheduler, iteration, writer)
+        run_training_iteration(model, optimizer, scheduler, scaler, iteration, writer)
 
         tr_duration = time.time() - tr_start
         print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")

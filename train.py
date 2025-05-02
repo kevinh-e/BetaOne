@@ -9,7 +9,6 @@ import gc
 import glob
 import pickle
 import torch
-import math
 import chess.pgn
 import numpy as np
 import torch.optim as optim
@@ -181,66 +180,60 @@ def train_network(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
     scheduler: CosineAnnealingLR,
-    data_loader: DataLoader,
+    scaler,
+    dataloader: DataLoader,
     epoch: int,
     writer: SummaryWriter,
     global_step: int,
 ):
     """Runs one epoch of training. Returns average loss"""
+
     model.train()
-    total_loss_accum, policy_loss_accum, value_loss_accum, batch_count = (
-        0.0,
-        0.0,
-        0.0,
-        0,
-    )
 
-    data_iterator = tqdm(data_loader, desc=f"Epoch {epoch + 1} Training", leave=False)
+    t_loss, t_p_loss, t_v_loss, batch_count = (0.0, 0.0, 0.0, 0)
+    dataiterator = tqdm(dataloader, desc=f"Epoch {epoch + 1} Training", leave=False)
 
-    for batch_i, (states, target_policies, target_values) in enumerate(data_iterator):
+    for states, t_policies, t_values in dataiterator:
         states = states.to(config.DEVICE)
-        target_policies = target_policies.to(config.DEVICE)
-        target_values = target_values.to(config.DEVICE)
+        t_policies = t_policies.to(config.DEVICE)
+        t_values = t_values.to(config.DEVICE)
 
         optimizer.zero_grad()
 
-        # Forward pass
-        policy_logits, values = model(states)
+        with torch.autocast(config.DEVICE):
+            policies, values = model(states)
+            loss, p_loss, v_loss = calculate_loss(
+                policies, values, t_policies, t_values
+            )
 
-        # loss
-        loss, policy_loss, value_loss = calculate_loss(
-            policy_logits, values, target_policies, target_values
-        )
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
-        # Backward pass and optimise
-        loss.backward()
-        optimizer.step()
+        scheduler.step()
 
-        if scheduler is not None:
-            scheduler.step()
-
-        total_loss_accum += loss.item()
-        policy_loss_accum += policy_loss.item()
-        value_loss_accum += value_loss.item()
+        t_loss += loss.item()
+        t_p_loss += p_loss.item()
+        t_v_loss += v_loss.item()
         batch_count += 1
 
         # --- Tensorboard ---
         if global_step % 10 == 0:
             writer.add_scalar("Loss/train_batch", loss.item(), global_step)
-            writer.add_scalar("Loss/policy_batch", policy_loss.item(), global_step)
-            writer.add_scalar("Loss/value_batch", value_loss.item(), global_step)
+            writer.add_scalar("Loss/policy_batch", p_loss.item(), global_step)
+            writer.add_scalar("Loss/value_batch", v_loss.item(), global_step)
 
             writer.add_scalar(
                 "LearningRate", optimizer.param_groups[0]["lr"], global_step
             )
 
         # --- tqdm ---
-        if data_iterator is not None:
-            data_iterator.set_postfix(
+        if dataiterator is not None:
+            dataiterator.set_postfix(
                 {
-                    "Loss": f"{total_loss_accum / batch_count:.4f}",
-                    "P_Loss": f"{policy_loss_accum / batch_count:.4f}",
-                    "V_Loss": f"{value_loss_accum / batch_count:.4f}",
+                    "Loss": f"{t_loss / batch_count:.4f}",
+                    "P_Loss": f"{t_p_loss / batch_count:.4f}",
+                    "V_Loss": f"{t_v_loss / batch_count:.4f}",
                 },
                 refresh=True,
             )
@@ -248,9 +241,9 @@ def train_network(
         global_step += 1
 
     # --- Tensorboard (epochs) ---
-    avg_total_loss = total_loss_accum / batch_count if batch_count > 0 else 0
-    avg_policy_loss = policy_loss_accum / batch_count if batch_count > 0 else 0
-    avg_value_loss = value_loss_accum / batch_count if batch_count > 0 else 0
+    avg_total_loss = t_loss / batch_count if batch_count > 0 else 0
+    avg_policy_loss = t_p_loss / batch_count if batch_count > 0 else 0
+    avg_value_loss = t_v_loss / batch_count if batch_count > 0 else 0
 
     writer.add_scalar("Loss (epoch)/train_epoch", avg_total_loss, epoch + 1)
     writer.add_scalar("Loss (epoch)/policy_epoch", avg_policy_loss, epoch + 1)
@@ -271,14 +264,11 @@ def run_pretraining(
     optimizer: optim.Optimizer,
     scheduler,
     scaler,
-    iteration: int,
     writer: SummaryWriter,
 ):
     """
     Trains the policy and value model on PGN data
     """
-    print("\n===== Starting Pretraining =====")
-
     pgn_dir = config.PGN_DATA_DIR
     paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"))
 
@@ -291,9 +281,14 @@ def run_pretraining(
         pin_memory=torch.cuda.is_available(),
     )
 
-    scheduler = CosineAnnealingLR(
-        optimizer, config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
-    )
+    print("\n===== Starting Pretraining =====")
+
+    train_network(model, optimizer, scheduler, scaler, dataloader, -1, writer, -1)
+
+    pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
+    torch.save(model.state_dict(), pretrained_path)
+
+    print("===== Finished Pretraining =====")
 
 
 def run_training_iteration(
@@ -327,16 +322,13 @@ def run_training_iteration(
 
     # --- DataLoader ---
     dataset = ChessDataset(training_data)
-    data_loader = DataLoader(
+    dataloader = DataLoader(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
         num_workers=config.NUM_WORKERS,
         pin_memory=torch.cuda.is_available(),
     )
-    steps_per_epoch = math.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
-    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=config.LR_MIN)
 
     # --- Training Loop ---
     print(
@@ -345,9 +337,17 @@ def run_training_iteration(
 
     estimated_SPE = (len(dataset) + config.BATCH_SIZE - 1) // config.BATCH_SIZE
     global_step = iteration * config.EPOCHS_PER_ITERATION * estimated_SPE
+
     for epoch in range(config.EPOCHS_PER_ITERATION):
         global_step = train_network(
-            model, optimizer, scheduler, data_loader, epoch, writer, global_step
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            dataloader,
+            epoch,
+            writer,
+            global_step,
         )
 
     print(f"===== Finished Training Iteration {iteration} =====")

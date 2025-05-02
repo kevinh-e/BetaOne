@@ -47,8 +47,8 @@ CONV_FILTERS = 256  # Number of filters in convolutional layers
 NUM_EPOCHS = 128
 PRETRAINING_T_MAX = 1
 # --- Training ---
-NUM_WORKERS = 3
-NUM_THREADS = 3
+NUM_WORKERS = 8
+NUM_THREADS = 1
 GAMES_MINIMUM = 100
 
 MAX_GAME_MOVES = 16384
