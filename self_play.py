@@ -128,7 +128,7 @@ def run_self_play_game(
             decoded_move = utils.index_to_move(action_index, board)
             played_move = decoded_move
         except ValueError as e:
-            print(f"\n!!! CRITICAL ERROR in Self-Play (index_to_move) !!!")
+            print("\n!!! CRITICAL ERROR in Self-Play (index_to_move) !!!")
             print(
                 f"  Game ID: {game_id}, Move Number: {move_number}, FEN: {current_fen}"
             )
@@ -140,7 +140,7 @@ def run_self_play_game(
         current_legal_moves = list(board.legal_moves)
         is_played_move_legal = played_move in current_legal_moves
         if not is_played_move_legal:
-            print(f"\n!!! CRITICAL ERROR in Self-Play (Legality Check) !!!")
+            print("\n!!! CRITICAL ERROR in Self-Play (Legality Check) !!!")
             print(
                 f"  Game ID: {game_id}, Move Number: {move_number}, FEN: {current_fen}"
             )

@@ -8,18 +8,112 @@ import os
 import gc
 import glob
 import pickle
+import multiprocessing as mp
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from typing import List, Self, Tuple
+from torch.utils.data import Dataset, DataLoader, IterableDataset, get_worker_info
+from typing import List, Optional, Self, Tuple
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+import numpy as np
+import chess
+import chess.pgn
 
 import config
+import utils
 from network import PolicyValueNet
-from self_play import SelfPlayData
+from self_play import SelfPlayData  # structure for supervised play is same as self-play
+
+
+def parse_pgn(filepath: str, max_games: Optional[int] = None) -> List[SelfPlayData]:
+    """
+    Parses a PGN file and extracts training examples.
+
+    Args:
+        filepath: Path to the PGN file.
+        max_games: Maximum number of games to process from the file (optional).
+
+    Returns:
+        A list of training examples: [(encoded_state, target_policy, target_value), ...]
+    """
+    training_examples: List[SelfPlayData] = []
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as pgn_file:
+        reader = chess.pgn.read_game
+        for games, game in enumerate(iter(lambda: reader(pgn_file), None)):
+            if max_games and games >= max_games:
+                break
+            result = game.headers.get("Result", "*")
+            outcome = {"1-0": 1.0, "0-1": -1.0, "1/2-1/2": 0.0}.get(result)
+            if outcome is None:
+                continue
+            board = game.board()
+            history = [board.copy()]
+            tracker = utils.RepetitionTracker()
+            tracker.add_board(board)
+            for node in game.mainline():
+                move = node.move
+                try:
+                    encoded = utils.encode_board(board, history[-8:], tracker)
+                except Exception as e:
+                    board.push(move)
+                    tracker.add_board(board)
+                    history.append(board.copy())
+                policy = np.zeros(config.NUM_ACTIONS, np.float32)
+                idx = utils.move_to_index(move)
+                if 0 <= idx < config.NUM_ACTIONS:
+                    policy[idx] = 1.0
+                value = outcome if board.turn == chess.WHITE else -outcome
+                training_examples.append((encoded, policy, value))
+                board.push(move)
+                tracker.add_board(board)
+                history.append(board.copy())
+    return training_examples
+
+
+class PGNDataset(IterableDataset):
+    def __init__(self, paths: List[str], max_games=None):
+        self.pgns = paths
+        self.max_games = max_games
+
+    def parse(self, path):
+        with open(path, "r", encoding="utf-8", errors="ignore") as pgn_file:
+            reader = chess.pgn.read_game
+
+            for games, game in enumerate(iter(lambda: reader(pgn_file), None)):
+                if self.max_games and games >= self.max_games:
+                    break
+                result = game.headers.get("Result", "*")
+                outcome = {"1-0": 1.0, "0-1": -1.0, "1/2-1/2": 0.0}.get(result)
+                if outcome is None:
+                    continue
+
+                board = game.board()
+                history = [board.copy()]
+                tracker = utils.RepetitionTracker()
+                tracker.add_board(board)
+
+                for node in game.mainline():
+                    move = node.move
+                    try:
+                        encoded = utils.encode_board(board, history[-8:], tracker)
+                    except:
+                        pass
+                    policy = np.zeros(config.NUM_ACTIONS, np.float32)
+                    idx = utils.move_to_index(move)
+                    if 0 <= idx < config.NUM_ACTIONS:
+                        policy[idx] = 1
+                    value = outcome if board.turn == chess.WHITE else -outcome
+                    value = np.array([value], dtype=np.float32)
+                    yield (encoded, policy, value)
+                    board.push(move)
+                    tracker.add_board(board)
+                    history.append(board.copy())
+
+    def __iter__(self):
+        for path in self.pgns:
+            yield from self.parse(path)
 
 
 class ChessDataset(Dataset):
@@ -44,39 +138,21 @@ class ChessDataset(Dataset):
         return state, policy_tensor, value_tensor
 
 
-def load_recent_data(iteration: int, num_past: int = 3) -> List[SelfPlayData]:
-    """Loads all game data starting from a specific self-play iteration."""
-    all_data: List[SelfPlayData] = []
-
-    start_iter = max(0, iteration - num_past)
-    end_iter = iteration
-
-    print(f"Loading data from iterations [{start_iter} - {end_iter}]...")
-
-    for iter in range(start_iter, end_iter + 1):
-        data_dir = os.path.join(config.DATA_DIR, f"iter_{iter}")
-        game_files_iterator = glob.glob(os.path.join(data_dir, "game_*.pkl"))
-        game_files = list(game_files_iterator)
-
-        if not game_files:
-            print(f"Warning: No game data found for iteration {iter} in {data_dir}")
-            continue
-
-        file_iterator = tqdm(game_files, desc=f"Loading iter {iter}", leave=False)
-
-        for filepath in file_iterator:
+def load_self_play_data(iteration: int, lookback: int = 3) -> List[SelfPlayData]:
+    data: List[SelfPlayData] = []
+    for it in range(max(0, iteration - lookback), iteration + 1):
+        files = glob.glob(os.path.join(config.DATA_DIR, f"iter_{it}", "game_*.pkl"))
+        for fpath in files:
             try:
-                with open(filepath, "rb") as f:
-                    game_data = pickle.load(f)
-                    if isinstance(game_data, list) and game_data:
-                        all_data.extend(game_data)
-                    else:
-                        print(f"Warning: Invalid data format in {filepath}")
+                with open(fpath, "rb") as f:
+                    seq = pickle.load(f)
+                    if isinstance(seq, list):
+                        data.extend(seq)
             except Exception as e:
-                print(f"Error loading game data from {filepath}: {e}")
+                print(f"File error: {e}")
+                continue
         gc.collect()
-
-    return all_data
+    return data
 
 
 def calculate_loss(
@@ -109,146 +185,202 @@ def calculate_loss(
     return total_loss, policy_loss, value_loss
 
 
-def train_network(
+def train_step(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
     scheduler: CosineAnnealingLR,
-    data_loader: DataLoader,
+    scaler: torch.GradScaler,
+    states: torch.Tensor,
+    t_policies: torch.Tensor,
+    t_values: torch.Tensor,
+):
+    states = states.to(config.DEVICE)
+    t_policies = t_policies.to(config.DEVICE)
+    t_values = t_values.to(config.DEVICE)
+
+    optimizer.zero_grad()
+
+    with torch.autocast(config.DEVICE):
+        policies, values = model(states)
+        loss, p_loss, v_loss = calculate_loss(policies, values, t_policies, t_values)
+
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+
+    scheduler.step()
+
+    return loss, p_loss, v_loss
+
+
+def run_epoch(
+    model: PolicyValueNet,
+    optimizer: optim.Optimizer,
+    scheduler: CosineAnnealingLR,
+    scaler: torch.GradScaler,
+    dataloader: DataLoader,
     epoch: int,
     writer: SummaryWriter,
     global_step: int,
-):
+    steps: Optional[int] = None,
+) -> int:
     """Runs one epoch of training. Returns average loss"""
     model.train()
-    total_loss_accum, policy_loss_accum, value_loss_accum, batch_count = (
-        0.0,
-        0.0,
-        0.0,
-        0,
-    )
+    t_loss, t_p_loss, t_v_loss, batch_count, curr_steps = (0.0, 0.0, 0.0, 0, 0)
 
-    data_iterator = tqdm(data_loader, desc=f"Epoch {epoch + 1} Training", leave=False)
+    desc = f"Epoch {epoch}"
+    if steps:
+        desc += f"(Steps {global_step}-{global_step + steps - 1})"
 
-    for batch_i, (states, target_policies, target_values) in enumerate(data_iterator):
-        states = states.to(config.DEVICE)
-        target_policies = target_policies.to(config.DEVICE)
-        target_values = target_values.to(config.DEVICE)
+    data_iterator = tqdm(dataloader, desc=desc, leave=False)
 
-        optimizer.zero_grad()
-
-        # Forward pass
-        policy_logits, values = model(states)
-
-        # loss
-        loss, policy_loss, value_loss = calculate_loss(
-            policy_logits, values, target_policies, target_values
+    for states, t_policies, t_values in data_iterator:
+        loss, p_loss, v_loss = train_step(
+            model, optimizer, scheduler, scaler, states, t_policies, t_values
         )
 
-        # Backward pass and optimise
-        loss.backward()
-        optimizer.step()
-
-        if scheduler is not None:
-            scheduler.step()
-
-        total_loss_accum += loss.item()
-        policy_loss_accum += policy_loss.item()
-        value_loss_accum += value_loss.item()
+        t_loss += loss
+        t_p_loss += p_loss
+        t_v_loss += v_loss
         batch_count += 1
+        global_step += 1
+        curr_steps += 1
 
-        # --- Tensorboard ---
-        if global_step % 10 == 0:
-            writer.add_scalar("Loss/train_batch", loss.item(), global_step)
-            writer.add_scalar("Loss/policy_batch", policy_loss.item(), global_step)
-            writer.add_scalar("Loss/value_batch", value_loss.item(), global_step)
-
+        if global_step % 25 == 0:
+            writer.add_scalar("Loss/train_batch", loss, global_step)
+            writer.add_scalar("Loss/policy_batch", p_loss, global_step)
+            writer.add_scalar("Loss/value_batch", v_loss, global_step)
             writer.add_scalar(
                 "LearningRate", optimizer.param_groups[0]["lr"], global_step
             )
 
-        # --- tqdm ---
-        if data_iterator is not None:
-            data_iterator.set_postfix(
-                {
-                    "Loss": f"{total_loss_accum / batch_count:.4f}",
-                    "P_Loss": f"{policy_loss_accum / batch_count:.4f}",
-                    "V_Loss": f"{value_loss_accum / batch_count:.4f}",
-                },
-                refresh=True,
-            )
+        data_iterator.set_postfix(
+            {
+                "Loss": f"{t_loss / batch_count:.4f}",
+                "P_Loss": f"{t_p_loss / batch_count:.4f}",
+                "V_Loss": f"{t_v_loss / batch_count:.4f}",
+                "LR": f"{optimizer.param_groups[0]['lr']:.1e}",
+            },
+            refresh=True,
+        )
 
-        global_step += 1
-
-    # --- Tensorboard (epochs) ---
-    avg_total_loss = total_loss_accum / batch_count if batch_count > 0 else 0
-    avg_policy_loss = policy_loss_accum / batch_count if batch_count > 0 else 0
-    avg_value_loss = value_loss_accum / batch_count if batch_count > 0 else 0
-
-    writer.add_scalar("Loss (epoch)/train_epoch", avg_total_loss, epoch + 1)
-    writer.add_scalar("Loss (epoch)/policy_epoch", avg_policy_loss, epoch + 1)
-    writer.add_scalar("Loss (epoch)/value_epoch", avg_value_loss, epoch + 1)
-
-    # CLI
-    print(f"--- Epoch {epoch + 1} Finished ---")
-    print(f"Average Training Loss: {avg_total_loss:.4f}")
-    print(f"Average Policy Loss:   {avg_policy_loss:.4f}")
-    print(f"Average Value Loss:    {avg_value_loss:.4f}")
-    print("-------------------------")
+        if steps is not None and curr_steps >= steps:
+            print(f"Reached target steps ({steps}) for this epoch.")
+            break
 
     return global_step
 
 
-def run_training_iteration(
+def run_sup_training(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
     scheduler: CosineAnnealingLR,
-    iteration: int,
+    scaler: torch.GradScaler,
     writer: SummaryWriter,
+):
+    """
+    Runs the supervised training on pgns
+    """
+    print("\n===== Starting Supervised Training =====")
+
+    pgn_dir = config.PGN_DATA_DIR
+    num_steps = config.SUPERVISED_FILES_PER_ITER
+
+    # load data
+    pgns = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"), recursive=True)[
+        : config.SUPERVISED_FILES_PER_ITER
+    ]
+
+    print(f"Parsing {len(pgns)} PGN files")
+    dataset = PGNDataset(pgns)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.BATCH_SIZE,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+        # prefetch_factor=config.PREFETCH_FACTOR if config.NUM_WORKERS > 0 else None,
+    )
+
+    scheduler.T_max = num_steps
+    scheduler.last_epoch = -1
+
+    global_step = run_epoch(
+        model,
+        optimizer,
+        scheduler,
+        scaler,
+        dataloader,
+        0,
+        writer,
+        0,
+        num_steps,
+    )
+
+    print("===== Finished Supervised Training =====")
+
+    # --- Save Checkpoint ---
+    # -1 iteration is pretraining
+    save_checkpoint(model, optimizer, -1, scheduler)
+    return global_step
+
+
+def run_selfplay_iteration(
+    model: PolicyValueNet,
+    optimizer: optim.Optimizer,
+    scheduler: CosineAnnealingLR,
+    scaler: torch.GradScaler,
+    writer: SummaryWriter,
+    iteration: int,
+    lookback: int,
+    start_step: int,
 ):
     """
     Runs a full training iteration: loads data, trains for specified epochs
     """
-    print(f"\n===== Starting Training Iteration {iteration} =====")
+    print(f"\n===== Starting SelfPlay Iteration {iteration} =====")
 
-    # --- Load Data ---
-    training_data = load_recent_data(iteration)
-    if not training_data:
-        print(
-            f"No training data available for iteration {iteration}. Skipping training."
-        )
+    epochs = config.EPOCHS_PER_ITERATION
+
+    data = load_self_play_data(iteration, lookback)
+    if not data:
+        print(f"No data for iteration {iteration}. Skipping...")
         return
 
-    if (
-        len(training_data) > config.GAME_BUFFER_SIZE * 100
-    ):  # Assuming ~100 moves/game avg
-        print(
-            f"Trimming training data from {len(training_data)} to approx {config.GAME_BUFFER_SIZE * 100} examples."
-        )
-        training_data = training_data[-config.GAME_BUFFER_SIZE * 100 :]
-
-    # --- DataLoader ---
-    dataset = ChessDataset(training_data)
-    data_loader = DataLoader(
+    dataset = ChessDataset(data)
+    dataloader = DataLoader(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=0,  # Adjust based on your system
+        num_workers=config.NUM_WORKERS,
         pin_memory=torch.cuda.is_available(),
+        # prefetch_factor=config.PREFETCH_FACTOR if config.NUM_WORKERS > 0 else None,
     )
 
     # --- Training Loop ---
-    print(
-        f"Training model on {len(dataset)} examples for {config.EPOCHS_PER_ITERATION} epochs..."
-    )
+    print(f"Training model on {len(dataset)} examples for {epochs} epochs...")
 
-    estimated_SPE = (len(dataset) + config.BATCH_SIZE - 1) // config.BATCH_SIZE
-    global_step = iteration * config.EPOCHS_PER_ITERATION * estimated_SPE
-    for epoch in range(config.EPOCHS_PER_ITERATION):
-        global_step = train_network(
-            model, optimizer, scheduler, data_loader, epoch, writer, global_step
+    total_batches = len(dataloader)
+    # reset scheudler for self-play
+    scheduler.last_epoch = -1
+    scheduler.T_max = total_batches * epochs
+
+    global_step = start_step
+    for epoch in range(epochs):
+        total_epochs = iteration * epochs + epoch + 1
+        global_step = run_epoch(
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            dataloader,
+            total_epochs,
+            writer,
+            global_step,
+            None,
         )
+        gc.collect()
 
-    print(f"===== Finished Training Iteration {iteration} =====")
+    print(f"===== Finished SelfPlay Iteration {iteration} =====")
 
     # --- Save Checkpoint ---
     if (
@@ -256,49 +388,78 @@ def run_training_iteration(
     ) % config.CHECKPOINT_INTERVAL == 0 or iteration == config.NUM_ITERATIONS - 1:
         save_checkpoint(model, optimizer, iteration, scheduler)
 
+    return global_step
+
 
 def save_checkpoint(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
     iteration: int,
     scheduler: CosineAnnealingLR,
+    is_best: bool = False,
 ):
-    """Saves the model and optimizer state."""
+    """
+    Saves a full checkpoint (model + optimizer + scheduler) and,
+    if `is_best` is True, also updates best_model.pth.
+    """
     os.makedirs(config.SAVE_DIR, exist_ok=True)
-    checkpoint_path = os.path.join(config.SAVE_DIR, f"checkpoint_iter_{iteration}.pth")
-    torch.save(
-        {
-            "iteration": iteration,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-        },
-        checkpoint_path,
-    )
-    print(f"Checkpoint saved to {checkpoint_path}")
+    ckpt_path = os.path.join(config.SAVE_DIR, f"checkpoint_iter_{iteration}.pth")
 
-    # Also save the 'best' model separately (can add evaluation step later)
-    best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
-    torch.save(model.state_dict(), best_model_path)
-    print(f"Updated best model weights saved to {best_model_path}")
+    # Build checkpoint dict
+    checkpoint = {
+        "iteration": iteration,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+    }
+    torch.save(checkpoint, ckpt_path)
+    print(f"Checkpoint saved to {ckpt_path}")
+
+    if is_best:
+        best_path = os.path.join(config.SAVE_DIR, "best_model.pth")
+        torch.save(model.state_dict(), best_path)
+        print(f"Best-model weights updated at {best_path}")
 
 
 def load_checkpoint(
     model: PolicyValueNet,
-    optimizer: optim.Optimizer,
-    scheduler: CosineAnnealingLR,
-    filename: str,
-) -> int:
-    """Loads a checkpoint."""
-    start_iter = 0
-    if os.path.isfile(filename):
-        print(f"Loading checkpoint '{filename}'")
-        checkpoint = torch.load(filename, map_location=config.DEVICE)
-        start_iter = checkpoint["iteration"] + 1  # Start from next iteration
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        print(f"Checkpoint loaded. Resuming from iteration {start_iter}")
-    else:
-        print(f"No checkpoint found at '{filename}'. Starting from scratch.")
-    return start_iter
+    optimizer: Optional[optim.Optimizer],
+    scheduler: Optional[CosineAnnealingLR],
+    filename: str = "",
+    load_optimizer_state: bool = True,
+):
+    """
+    Loads a checkpoint from disk.
+
+    Args:
+        model:               your PolicyValueNet instance
+        optimizer:           optimizer to load state into (or None)
+        scheduler:           LR scheduler to load state into (or None)
+        filename:            path to the .pth file
+        load_optimizer_state: if False, only loads model weights
+
+    Returns:
+        start_iteration, start_global_step
+    """
+    if not os.path.isfile(filename):
+        print(f"No checkpoint found at '{filename}', starting from scratch.")
+        return 0, 0
+
+    print(f"Loading checkpoint from '{filename}'")
+    ckpt = torch.load(filename, map_location=config.DEVICE)
+
+    # iteration stored is the last-completed one, so resume at +1
+    start_iter = ckpt.get("iteration", 0) + 1
+
+    # model weights
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    start_global_step = ckpt.get("global_step", 0)
+
+    if load_optimizer_state and optimizer is not None and scheduler is not None:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if ckpt.get("scheduler_state_dict") is not None:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+    print(f"Resuming from iteration {start_iter}, global step {start_global_step}")
+    return start_iter, start_global_step

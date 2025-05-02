@@ -11,6 +11,40 @@ from typing import Tuple
 import config
 
 
+class SEBlock(nn.Module):
+    """
+    A single Squeeze and Excitation Block.
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the SE block.
+
+        Args:
+            x: Input tensor (batch_size, channels, height, width).
+
+        Returns:
+            Output tensor with re-calibrated channels.
+        """
+        b, c, _, _ = x.size()
+        # Squeeze
+        y = self.avg_pool(x).view(b, c)
+        # Excitation
+        y = self.fc(y).view(b, c, 1, 1)
+        # Scale
+        return x * y.expand_as(x)
+
+
 class ResidualBlock(nn.Module):
     """
     A single residual block as used in AlphaGo Zero.
@@ -26,6 +60,7 @@ class ResidualBlock(nn.Module):
             num_filters, num_filters, kernel_size=3, padding=1, bias=False
         )
         self.bn2 = nn.BatchNorm2d(num_filters)
+        self.se = SEBlock(num_filters)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -40,6 +75,7 @@ class ResidualBlock(nn.Module):
         identity = x
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
+        out = self.se(out)
         # skip connection
         out += identity
         out = F.relu(out)

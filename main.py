@@ -8,6 +8,7 @@ import os
 from numpy import ceil
 import numpy
 import torch
+from torch.nn import CosineSimilarity
 import torch.optim as optim
 import multiprocessing as mp
 import torch.backends.cudnn as cudnn
@@ -20,172 +21,188 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
-from train import run_training_iteration, load_checkpoint
+from train import (
+    run_selfplay_iteration,
+    run_sup_training,
+    load_checkpoint,
+    save_checkpoint,
+)
+
+
+def setup_directories():
+    for d in (config.SAVE_DIR, config.LOG_DIR, config.DATA_DIR):
+        os.makedirs(d, exist_ok=True)
+
+
+def load_or_initialize(model, optimizer, scheduler):
+    """
+    Load the latest full checkpoint if available; else load best_model weights;
+    return start_iter and optionally loaded global_step.
+    """
+    save_dir = config.SAVE_DIR
+    # find numeric checkpoints
+    ckpts = glob.glob(os.path.join(save_dir, "checkpoint_iter_*.pth"))
+    iters = []
+    for f in ckpts:
+        name = os.path.basename(f)
+        try:
+            it = int(name.split("_")[-1].split(".")[0])
+            iters.append((it, name))
+        except ValueError:
+            continue
+    if iters:
+        # pick latest
+        start_iter, ckpt_name = max(iters, key=lambda x: x[0])
+        print(f"Loading full checkpoint: {ckpt_name}")
+        global_step = load_checkpoint(
+            model, optimizer, scheduler, ckpt_name, load_optimizer_state=True
+        )
+        return start_iter, global_step
+
+    best = os.path.join(save_dir, "best_model.pth")
+    if os.path.exists(best):
+        print(f"Loading best_model weights: {best}")
+        load_checkpoint(
+            model,
+            optimizer=None,
+            scheduler=None,
+            filename="best_model.pth",
+            load_optimizer_state=False,
+        )
+        start_iter = 0
+        # Optionally load pretrain optimizer state
+        pretrain = os.path.join(save_dir, "checkpoint_iter_pretrain.pth")
+        if os.path.exists(pretrain):
+            print("Loading optimizer/scheduler from pretrain checkpoint")
+            load_checkpoint(
+                model,
+                optimizer,
+                scheduler,
+                "checkpoint_iter_pretrain.pth",
+                load_optimizer_state=True,
+            )
+        return start_iter, 0
+
+    print("No checkpoint found. Starting from scratch.")
+    return 0, 0
+
+
+def run_self_play_pool(model_path, iteration):
+    """Generate self-play data in parallel."""
+    num_workers = config.NUM_THREADS
+    num_games = max(config.GAMES_MINIMUM, num_workers)
+    num_games = int(num_workers * ceil(num_games / num_workers))
+    devices = [config.DEVICE] * num_workers
+
+    if config.DEVICE == "cuda" and torch.cuda.device_count() > 1:
+        devices = [f"cuda:{i % torch.cuda.device_count()}" for i in range(num_workers)]
+        print(f"Assigning self-play devices: {devices}")
+
+    args = [
+        (model_path, iteration, i, devices[i % num_workers]) for i in range(num_games)
+    ]
+
+    start = time.time()
+    if num_workers > 1:
+        with mp.Pool(processes=num_workers) as pool:
+            list(pool.imap_unordered(run_self_play_worker, args))
+    else:
+        for a in args:
+            run_self_play_worker(a)
+    duration = time.time() - start
+    return num_games, duration
 
 
 def run_self_play_worker(args):
-    """Worker function for parallel self-play game generation."""
-    model_weights_path, iteration, game_idx = args
-    tqdm.write(f"Worker started for game {iteration}-{game_idx}")
-
-    model = PolicyValueNet().to(config.DEVICE)
-    # Load latest model
+    model_path, iteration, game_idx, device_str = args
+    device = torch.device(device_str)
+    model = PolicyValueNet().to(device)
     try:
-        model.load_state_dict(
-            torch.load(model_weights_path, map_location=config.DEVICE)
-        )
+        model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval()
     except Exception as e:
-        print(f"Error loading model weights in worker {game_idx}: {e}")
+        print(f"Failed to load weights on {device}: {e}")
         return
 
-    # Run a single game
-    game_data = run_self_play_game(model, game_id=game_idx)
-
-    # Save the generated data
-    if game_data:
-        save_game_data(game_data, iteration, game_id=game_idx)
-        tqdm.write(
-            f"Worker finished game {iteration}-{game_idx}, saved {len(game_data)} examples."
-        )
-    else:
-        tqdm.write(f"Worker failed for game {iteration}-{game_idx}.")
+    data = run_self_play_game(model, game_id=game_idx)
+    if data:
+        save_game_data(data, iteration, game_id=game_idx)
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def main():
-    """Main function to execute the training loop."""
     cudnn.benchmark = True
     print("Starting AlphaZero Chess Training...")
-    print(f"Using device: {config.DEVICE}")
+    print(
+        f"Primary device: {config.DEVICE}, Workers: {config.NUM_WORKERS}, AMP: {config.USE_AMP}"
+    )
 
-    os.makedirs(config.SAVE_DIR, exist_ok=True)
-    os.makedirs(config.LOG_DIR, exist_ok=True)
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-
+    setup_directories()
     writer = SummaryWriter(log_dir=config.LOG_DIR)
 
     model = PolicyValueNet().to(config.DEVICE)
     optimizer = optim.AdamW(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
+    scaler = torch.GradScaler(device=config.DEVICE)
+    scheduler = CosineAnnealingLR(optimizer, T_max=1, eta_min=config.LR_MIN)
 
-    steps_per_epoch = numpy.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
-    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
+    start_iter, global_step = load_or_initialize(model, optimizer, scheduler)
 
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+    # Supervised pre-training
+    if start_iter == 0:
+        global_step = run_sup_training(
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            writer,
+        )
+        # reset scheduler after pretrain
+        scheduler = CosineAnnealingLR(optimizer, T_max=1, eta_min=config.LR_MIN)
 
-    # Try loading the 'best_model.pth' first, then specific checkpoints
-    best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
-    start_iter = 0
-    if os.path.exists(best_model_path):
-        try:
-            print(f"Loading weights from {best_model_path}")
-            model.load_state_dict(
-                torch.load(best_model_path, map_location=config.DEVICE)
-            )
-            # Find the latest checkpoint to potentially resume optimizer state and iteration count
-            checkpoint_files = sorted(
-                glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
-            )
-            if checkpoint_files:
-                latest_checkpoint = max(
-                    checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
-                )
-                start_iter = load_checkpoint(
-                    model, optimizer, scheduler, latest_checkpoint
-                )
-            else:
-                print(
-                    "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
-                )
-        except Exception as e:
-            print(f"Error loading best model weights: {e}. Starting fresh.")
-            # Fallback restart
-            start_iter = 0
-    else:
-        print("No best_model.pth found. Starting training from scratch.")
+    # Self-play + training loop
+    for it in range(start_iter, config.NUM_ITERATIONS):
+        print(f"Iteration {it}/{config.NUM_ITERATIONS - 1}")
 
-    # --- Main Training Loop ---
-    for iteration in range(start_iter, config.NUM_ITERATIONS):
-        print(f"\n{'=' * 20} Iteration {iteration}/{config.NUM_ITERATIONS} {'=' * 20}")
-
-        # --- Self-Play ---
-        print("\n--- Starting Self-Play Phase ---")
         model.eval()
+        model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
+        if not os.path.exists(model_path):
+            torch.save(model.state_dict(), model_path)
 
-        current_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
-        if not os.path.exists(current_model_path):
-            # save if no weights
-            print("Saving initial model weights...")
-            torch.save(model.state_dict(), current_model_path)
+        iter_dir = os.path.join(config.DATA_DIR, f"iter_{it}")
+        os.makedirs(iter_dir, exist_ok=True)
 
-        num_workers = config.NUM_WORKERS
-        num_games_this_iteration = int(
-            num_workers * ceil(config.GAMES_MINIMUM / num_workers)
+        n_games, sp_time = run_self_play_pool(model_path, it)
+        print(f"Self-play: {n_games} games in {sp_time:.2f}s")
+        writer.add_scalar("Time/self_play_duration_sec", sp_time, it)
+        writer.add_scalar("SelfPlay/num_games", n_games, it)
+
+        model.train()
+        train_start = time.time()
+        global_step = run_selfplay_iteration(
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            writer,
+            iteration=it,
+            lookback=5,
+            start_step=global_step,
         )
+        train_time = time.time() - train_start
+        print(f"Training: completed in {train_time:.2f}s")
+        writer.add_scalar("Time/train_duration_sec", train_time, it)
 
-        worker_args = [
-            (current_model_path, iteration, i) for i in range(num_games_this_iteration)
-        ]
+        save_checkpoint(model, optimizer, it, scheduler, is_best=True)
 
-        # Use multiprocessing pool for parallel game generation
-        # num_workers = max(1, mp.cpu_count() // 2)
-
-        print(
-            f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
-        )
-
-        # Clear old data for this iteration if necessary (optional)
-        # shutil.rmtree(os.path.join(config.DATA_DIR, f"iter_{iteration}"), ignore_errors=True)
-
-        sp_start = time.time()
-        if num_workers > 1:
-            try:
-                with mp.Pool(processes=num_workers) as pool:
-                    list(
-                        tqdm(
-                            pool.imap_unordered(run_self_play_worker, worker_args),
-                            total=num_games_this_iteration,
-                            desc="Self-Play Games",
-                        )
-                    )
-            except Exception as e:
-                print(
-                    f"Running self-play sequentially as fallback: Multiprocessing error {e}"
-                )
-                # Fallback to sequential execution if pool fails
-                for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
-                    run_self_play_worker(args)
-        else:
-            print("Running self-play sequentially...")
-            for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
-                run_self_play_worker(args)
-
-        sp_duration = time.time() - sp_start
-        print(f"--- Self-Play Phase Finished [{sp_duration:.2f}s] ---")
-
-        # --- Step 2: Training ---
-        print("\n--- Starting Training Phase ---")
-        tr_start = time.time()
-
-        run_training_iteration(model, optimizer, scheduler, iteration, writer)
-
-        tr_duration = time.time() - tr_start
-        print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")
-
-        # --- Tensorboard ---
-        writer.add_scalar("Time/train_duration", tr_duration, iteration)
-
-        # Optional Step 3: Evaluation against a baseline or previous checkpoint
-        # (Not implemented in this stub)
-
-    print("\n===== AlphaZero Chess Training Completed =====")
-
+    print("Training completed.")
     writer.close()
 
 
 if __name__ == "__main__":
-    # Set multiprocessing start method globally if needed, especially for CUDA
     try:
         mp.set_start_method("spawn", force=True)
     except RuntimeError:
