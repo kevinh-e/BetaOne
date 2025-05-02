@@ -9,21 +9,86 @@ import gc
 import glob
 import pickle
 import torch
+import math
+import chess.pgn
+import numpy as np
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import Dataset, DataLoader, IterableDataset, get_worker_info
 from typing import List, Self, Tuple
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+import itertools
 
 import config
+import utils
 from network import PolicyValueNet
 from self_play import SelfPlayData
 
 
 class PGNDataset(IterableDataset):
-    def
+    def __init__(self, paths: List[str], max_games=None):
+        super().__init__()
+        self.pgns = paths
+        self.max_games = max_games
+
+    def parse(self, path):
+        with open(path, "r", encoding="utf-8", errors="ignore") as pgn_file:
+            reader = chess.pgn.read_game
+
+            for games, game in enumerate(iter(lambda: reader(pgn_file), None)):
+                if self.max_games and games >= self.max_games:
+                    break
+
+                board = game.board()
+                history = [board.copy()]
+                tracker = utils.RepetitionTracker()
+                tracker.add_board(board)
+
+                result = game.headers.get("Result", "*")
+                outcome = {"1-0": 1.0, "0-1": -1.0, "1/2-1/2": 0.0}.get(result)
+                if outcome is None:
+                    continue
+
+                for node in game.mainline():
+                    move = node.move
+                    try:
+                        encoded = utils.encode_board(board, history[-8:], tracker)
+                        policy = np.zeros(config.NUM_ACTIONS, np.float32)
+                        idx = utils.move_to_index(move)
+
+                        if 0 <= idx < config.NUM_ACTIONS:
+                            policy[idx] = 1
+
+                        value = outcome if board.turn == chess.WHITE else -outcome
+                        value = np.array([value], dtype=np.float32)
+
+                        yield (encoded, policy, value)
+                    except Exception as e:
+                        pass
+                    board.push(move)
+                    tracker.add_board(board)
+                    history.append(board.copy())
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+
+        if worker_info is None:
+            # sequentaial
+            worker_pgns = self.pgns
+        else:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+
+            worker_pgns = itertools.islice(self.pgns, worker_id, None, num_workers)
+
+        for path in worker_pgns:
+            try:
+                yield from self.parse(path)
+            except Exception as e:
+                print(f"PGN parse error: {e}")
+
 
 class ChessDataset(Dataset):
     """Custom PyTorch Dataset for loading self-play game data."""
@@ -201,10 +266,41 @@ def train_network(
     return global_step
 
 
+def run_pretraining(
+    model: PolicyValueNet,
+    optimizer: optim.Optimizer,
+    scheduler,
+    scaler,
+    iteration: int,
+    writer: SummaryWriter,
+):
+    """
+    Trains the policy and value model on PGN data
+    """
+    print("\n===== Starting Pretraining =====")
+
+    pgn_dir = config.PGN_DATA_DIR
+    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"))
+
+    print(f"Parsing {len(paths)} PGN files")
+    dataset = PGNDataset(paths)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.BATCH_SIZE,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    scheduler = CosineAnnealingLR(
+        optimizer, config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
+    )
+
+
 def run_training_iteration(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
-    scheduler: CosineAnnealingLR,
+    scheduler,
+    scaler,
     iteration: int,
     writer: SummaryWriter,
 ):
@@ -235,9 +331,12 @@ def run_training_iteration(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=0,  # Adjust based on your system
+        num_workers=config.NUM_WORKERS,
         pin_memory=torch.cuda.is_available(),
     )
+    steps_per_epoch = math.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
+    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=config.LR_MIN)
 
     # --- Training Loop ---
     print(

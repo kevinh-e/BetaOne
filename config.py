@@ -43,6 +43,9 @@ MCTS_BATCH_SIZE = 128
 RESIDUAL_BLOCKS = 17  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
+# --- Pretraining ---
+NUM_EPOCHS = 128
+PRETRAINING_T_MAX = 1
 # --- Training ---
 NUM_WORKERS = 3
 NUM_THREADS = 3
@@ -59,6 +62,7 @@ CHECKPOINT_INTERVAL = 5  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 100000  # Maximum number of games to store for training data
 
 # --- Paths ---
+PGN_DATA_DIR = "pgns"
 SAVE_DIR = "checkpoints"
 LOG_DIR = "logs"
 DATA_DIR = "data"

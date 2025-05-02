@@ -68,40 +68,52 @@ def main():
     optimizer = optim.AdamW(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
+    scheduler = CosineAnnealingLR(
+        optimizer, 1, eta_min=config.LR_MIN
+    )
+    scaler = torch.GradScaler(config.DEVICE)
 
-    steps_per_epoch = numpy.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
-    total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
-
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=config.LR_MIN)
-
-    # Try loading the 'best_model.pth' first, then specific checkpoints
+    # TODO: Try load pretrained weights, then 'best_model.pth', then checkpoints
+    start_iter = -1
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
-    start_iter = 0
+    pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
     if os.path.exists(best_model_path):
+        print(f"Loading weights from {best_model_path}")
+        model.load_state_dict(
+            torch.load(best_model_path, map_location=config.DEVICE)
+        )
+        # Find the latest checkpoint to potentially resume optimizer state and iteration count
+        checkpoint_files = sorted(
+            glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
+        )
+        if checkpoint_files:
+            latest_checkpoint = max(
+                checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
+            )
+            start_iter = load_checkpoint(
+                model, optimizer, scheduler, latest_checkpoint
+            )
+        else:
+            print(
+                "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
+            )
+    elif os.path.exists(pretrained_path):
+        # load pretrained weights
         try:
-            print(f"Loading weights from {best_model_path}")
-            model.load_state_dict(
-                torch.load(best_model_path, map_location=config.DEVICE)
-            )
-            # Find the latest checkpoint to potentially resume optimizer state and iteration count
-            checkpoint_files = sorted(
-                glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
-            )
-            if checkpoint_files:
-                latest_checkpoint = max(
-                    checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
-                )
-                start_iter = load_checkpoint(
-                    model, optimizer, scheduler, latest_checkpoint
-                )
-            else:
-                print(
-                    "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
-                )
-        except Exception as e:
-            print(f"Error loading best model weights: {e}. Starting fresh.")
-    else:
-        print("No best_model.pth found. Starting training from scratch.")
+            model.load_state_dict(torch.load(pretrained_path, map_location=config.DEVICE))
+            print(f"Loaded pretrained weights")
+            # skip pretraining
+            start_iter = 0
+        except:
+            pass
+
+    if start_iter == -1:
+    # --- Supervised Pre-Training -- 
+    for epoch in config.NUM_EPOCHS:
+
+
+    # reset scheduler
+    scheduler.last_epoch = 1
 
     # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
