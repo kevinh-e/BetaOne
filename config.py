@@ -35,20 +35,21 @@ TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during sel
 TEMPERATURE_FINAL = 0.1  # Final temperature
 TEMPERATURE_THRESHOLD = 30  # Move number after which temperature changes
 DIRICHLET_ALPHA = 0.1  # Alpha value for Dirichlet noise
-DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
+# Epsilon value for Dirichlet noise (fraction of noise)
+DIRICHLET_EPSILON = 0.25
 WIDEN_COEFF = 1.5
 MCTS_BATCH_SIZE = 128
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 17  # Number of residual blocks in the network
-CONV_FILTERS = 256  # Number of filters in convolutional layers
+RESIDUAL_BLOCKS = 20  # Number of residual blocks in the network
+CONV_FILTERS = 512  # Number of filters in convolutional layers
 
 # --- Pretraining ---
 NUM_EPOCHS = 128
-PRETRAINING_T_MAX = 1
+PRETRAINING_T_MAX = 1255388
 # --- Training ---
-NUM_WORKERS = 8
-NUM_THREADS = 1
+NUM_WORKERS = 4
+NUM_THREADS = 4
 GAMES_MINIMUM = 100
 
 MAX_GAME_MOVES = 16384
