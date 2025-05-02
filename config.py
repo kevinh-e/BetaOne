@@ -45,12 +45,14 @@ CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
 NUM_WORKERS = 3
+NUM_THREADS = 3
 GAMES_MINIMUM = 100
 
 MAX_GAME_MOVES = 16384
 BATCH_SIZE = 256
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
+LR_MIN = 1e-6
 EPOCHS_PER_ITERATION = 20  # Number of training epochs per self-play iteration
 NUM_ITERATIONS = 80  # Total number of training iterations (self-play -> train)
 CHECKPOINT_INTERVAL = 5  # Save model checkpoint every N iterations

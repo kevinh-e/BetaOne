@@ -11,7 +11,7 @@ import pickle
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 from typing import List, Self, Tuple
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -21,6 +21,9 @@ import config
 from network import PolicyValueNet
 from self_play import SelfPlayData
 
+
+class PGNDataset(IterableDataset):
+    def
 
 class ChessDataset(Dataset):
     """Custom PyTorch Dataset for loading self-play game data."""

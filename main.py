@@ -72,7 +72,7 @@ def main():
     steps_per_epoch = numpy.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
     total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
 
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=config.LR_MIN)
 
     # Try loading the 'best_model.pth' first, then specific checkpoints
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
@@ -103,20 +103,18 @@ def main():
     else:
         print("No best_model.pth found. Starting training from scratch.")
 
-    # --- Main Training Loop ---
+    # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
         print(f"\n{'=' * 20} Iteration {iteration}/{config.NUM_ITERATIONS} {'=' * 20}")
-
-        # --- Self-Play ---
         print("\n--- Starting Self-Play Phase ---")
-        model.eval()
 
+        model.eval()
         current_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
         if not os.path.exists(current_model_path):
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        num_workers = config.NUM_WORKERS
+        num_workers = config.NUM_THREADS
         num_games_this_iteration = int(
             num_workers * ceil(config.GAMES_MINIMUM / num_workers)
         )
