@@ -2,3 +2,5 @@
 /data
 /logs
 /__pycache__
+/temp
+/pgns

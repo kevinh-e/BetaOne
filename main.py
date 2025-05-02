@@ -100,8 +100,6 @@ def main():
                 )
         except Exception as e:
             print(f"Error loading best model weights: {e}. Starting fresh.")
-            # Fallback restart
-            start_iter = 0
     else:
         print("No best_model.pth found. Starting training from scratch.")
 
@@ -115,7 +113,6 @@ def main():
 
         current_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
         if not os.path.exists(current_model_path):
-            # save if no weights
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
@@ -123,20 +120,9 @@ def main():
         num_games_this_iteration = int(
             num_workers * ceil(config.GAMES_MINIMUM / num_workers)
         )
-
         worker_args = [
             (current_model_path, iteration, i) for i in range(num_games_this_iteration)
         ]
-
-        # Use multiprocessing pool for parallel game generation
-        # num_workers = max(1, mp.cpu_count() // 2)
-
-        print(
-            f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
-        )
-
-        # Clear old data for this iteration if necessary (optional)
-        # shutil.rmtree(os.path.join(config.DATA_DIR, f"iter_{iteration}"), ignore_errors=True)
 
         sp_start = time.time()
         if num_workers > 1:
@@ -175,9 +161,6 @@ def main():
 
         # --- Tensorboard ---
         writer.add_scalar("Time/train_duration", tr_duration, iteration)
-
-        # Optional Step 3: Evaluation against a baseline or previous checkpoint
-        # (Not implemented in this stub)
 
     print("\n===== AlphaZero Chess Training Completed =====")
 

@@ -37,15 +37,15 @@ TEMPERATURE_THRESHOLD = 30  # Move number after which temperature changes
 DIRICHLET_ALPHA = 0.1  # Alpha value for Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Epsilon value for Dirichlet noise (fraction of noise)
 WIDEN_COEFF = 1.5
-MCTS_BATCH_SIZE = 16
+MCTS_BATCH_SIZE = 128
 
 # --- Neural Network ---
 RESIDUAL_BLOCKS = 17  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Training ---
-NUM_WORKERS = 8
-GAMES_MINIMUM = 50
+NUM_WORKERS = 3
+GAMES_MINIMUM = 100
 
 MAX_GAME_MOVES = 16384
 BATCH_SIZE = 256
