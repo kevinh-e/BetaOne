@@ -16,7 +16,6 @@ python-chess==1.999
 setuptools==70.2.0
 six==1.17.0
 standard-imghdr==3.13.0
-sympy==1.13.1
 tensorboard==2.19.0
 tensorboard-data-server==0.7.2
 tqdm==4.67.1

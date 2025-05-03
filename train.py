@@ -200,15 +200,16 @@ def train_network(
 
         optimizer.zero_grad()
 
-        with torch.autocast(config.DEVICE):
-            policies, values = model(states)
-            loss, p_loss, v_loss = calculate_loss(
-                policies, values, t_policies, t_values
-            )
+        # with torch.autocast(config.DEVICE):
+        policies, values = model(states)
+        loss, p_loss, v_loss = calculate_loss(policies, values, t_policies, t_values)
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
+
+        # scaler.scale(loss).backward()
+        # scaler.step(optimizer)
+        # scaler.update()
 
         scheduler.step()
 
@@ -270,7 +271,7 @@ def run_pretraining(
     Trains the policy and value model on PGN data
     """
     pgn_dir = config.PGN_DATA_DIR
-    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"))
+    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"), recursive=True)
 
     print(f"Parsing {len(paths)} PGN files")
     dataset = PGNDataset(paths)
