@@ -9,17 +9,84 @@ import gc
 import glob
 import pickle
 import torch
+import chess.pgn
+import numpy as np
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset, get_worker_info
 from typing import List, Self, Tuple
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+import itertools
 
 import config
+import utils
 from network import PolicyValueNet
 from self_play import SelfPlayData
+
+
+class PGNDataset(IterableDataset):
+    def __init__(self, paths: List[str], max_games=None):
+        super().__init__()
+        self.pgns = paths
+        self.max_games = max_games
+
+    def parse(self, path):
+        with open(path, "r", encoding="utf-8", errors="ignore") as pgn_file:
+            reader = chess.pgn.read_game
+
+            for games, game in enumerate(iter(lambda: reader(pgn_file), None)):
+                if self.max_games and games >= self.max_games:
+                    break
+
+                board = game.board()
+                history = [board.copy()]
+                tracker = utils.RepetitionTracker()
+                tracker.add_board(board)
+
+                result = game.headers.get("Result", "*")
+                outcome = {"1-0": 1.0, "0-1": -1.0, "1/2-1/2": 0.0}.get(result)
+                if outcome is None:
+                    continue
+
+                for node in game.mainline():
+                    move = node.move
+                    try:
+                        encoded = utils.encode_board(board, history[-8:], tracker)
+                        policy = np.zeros(config.NUM_ACTIONS, np.float32)
+                        idx = utils.move_to_index(move)
+
+                        if 0 <= idx < config.NUM_ACTIONS:
+                            policy[idx] = 1
+
+                        value = outcome if board.turn == chess.WHITE else -outcome
+                        value = np.array([value], dtype=np.float32)
+
+                        yield (encoded, policy, value)
+                    except Exception as e:
+                        pass
+                    board.push(move)
+                    tracker.add_board(board)
+                    history.append(board.copy())
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+
+        if worker_info is None:
+            # sequentaial
+            worker_pgns = self.pgns
+        else:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+
+            worker_pgns = itertools.islice(self.pgns, worker_id, None, num_workers)
+
+        for path in worker_pgns:
+            try:
+                yield from self.parse(path)
+            except Exception as e:
+                print(f"PGN parse error: {e}")
 
 
 class ChessDataset(Dataset):
@@ -113,66 +180,60 @@ def train_network(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
     scheduler: CosineAnnealingLR,
-    data_loader: DataLoader,
+    scaler,
+    dataloader: DataLoader,
     epoch: int,
     writer: SummaryWriter,
     global_step: int,
 ):
     """Runs one epoch of training. Returns average loss"""
+
     model.train()
-    total_loss_accum, policy_loss_accum, value_loss_accum, batch_count = (
-        0.0,
-        0.0,
-        0.0,
-        0,
-    )
 
-    data_iterator = tqdm(data_loader, desc=f"Epoch {epoch + 1} Training", leave=False)
+    t_loss, t_p_loss, t_v_loss, batch_count = (0.0, 0.0, 0.0, 0)
+    dataiterator = tqdm(dataloader, desc=f"Epoch {epoch + 1} Training", leave=False)
 
-    for batch_i, (states, target_policies, target_values) in enumerate(data_iterator):
+    for states, t_policies, t_values in dataiterator:
         states = states.to(config.DEVICE)
-        target_policies = target_policies.to(config.DEVICE)
-        target_values = target_values.to(config.DEVICE)
+        t_policies = t_policies.to(config.DEVICE)
+        t_values = t_values.to(config.DEVICE)
 
         optimizer.zero_grad()
 
-        # Forward pass
-        policy_logits, values = model(states)
+        with torch.autocast(config.DEVICE):
+            policies, values = model(states)
+            loss, p_loss, v_loss = calculate_loss(
+                policies, values, t_policies, t_values
+            )
 
-        # loss
-        loss, policy_loss, value_loss = calculate_loss(
-            policy_logits, values, target_policies, target_values
-        )
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
-        # Backward pass and optimise
-        loss.backward()
-        optimizer.step()
+        scheduler.step()
 
-        if scheduler is not None:
-            scheduler.step()
-
-        total_loss_accum += loss.item()
-        policy_loss_accum += policy_loss.item()
-        value_loss_accum += value_loss.item()
+        t_loss += loss.item()
+        t_p_loss += p_loss.item()
+        t_v_loss += v_loss.item()
         batch_count += 1
 
         # --- Tensorboard ---
         if global_step % 10 == 0:
             writer.add_scalar("Loss/train_batch", loss.item(), global_step)
-            writer.add_scalar("Loss/policy_batch", policy_loss.item(), global_step)
-            writer.add_scalar("Loss/value_batch", value_loss.item(), global_step)
+            writer.add_scalar("Loss/policy_batch", p_loss.item(), global_step)
+            writer.add_scalar("Loss/value_batch", v_loss.item(), global_step)
 
             writer.add_scalar(
                 "LearningRate", optimizer.param_groups[0]["lr"], global_step
             )
 
         # --- tqdm ---
-        if data_iterator is not None:
-            data_iterator.set_postfix(
+        if dataiterator is not None:
+            dataiterator.set_postfix(
                 {
-                    "Loss": f"{total_loss_accum / batch_count:.4f}",
-                    "P_Loss": f"{policy_loss_accum / batch_count:.4f}",
-                    "V_Loss": f"{value_loss_accum / batch_count:.4f}",
+                    "Loss": f"{t_loss / batch_count:.4f}",
+                    "P_Loss": f"{t_p_loss / batch_count:.4f}",
+                    "V_Loss": f"{t_v_loss / batch_count:.4f}",
                 },
                 refresh=True,
             )
@@ -180,9 +241,9 @@ def train_network(
         global_step += 1
 
     # --- Tensorboard (epochs) ---
-    avg_total_loss = total_loss_accum / batch_count if batch_count > 0 else 0
-    avg_policy_loss = policy_loss_accum / batch_count if batch_count > 0 else 0
-    avg_value_loss = value_loss_accum / batch_count if batch_count > 0 else 0
+    avg_total_loss = t_loss / batch_count if batch_count > 0 else 0
+    avg_policy_loss = t_p_loss / batch_count if batch_count > 0 else 0
+    avg_value_loss = t_v_loss / batch_count if batch_count > 0 else 0
 
     writer.add_scalar("Loss (epoch)/train_epoch", avg_total_loss, epoch + 1)
     writer.add_scalar("Loss (epoch)/policy_epoch", avg_policy_loss, epoch + 1)
@@ -198,10 +259,43 @@ def train_network(
     return global_step
 
 
+def run_pretraining(
+    model: PolicyValueNet,
+    optimizer: optim.Optimizer,
+    scheduler,
+    scaler,
+    writer: SummaryWriter,
+):
+    """
+    Trains the policy and value model on PGN data
+    """
+    pgn_dir = config.PGN_DATA_DIR
+    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"))
+
+    print(f"Parsing {len(paths)} PGN files")
+    dataset = PGNDataset(paths)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.BATCH_SIZE,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    print("\n===== Starting Pretraining =====")
+
+    train_network(model, optimizer, scheduler, scaler, dataloader, -1, writer, -1)
+
+    pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
+    torch.save(model.state_dict(), pretrained_path)
+
+    print("===== Finished Pretraining =====")
+
+
 def run_training_iteration(
     model: PolicyValueNet,
     optimizer: optim.Optimizer,
-    scheduler: CosineAnnealingLR,
+    scheduler,
+    scaler,
     iteration: int,
     writer: SummaryWriter,
 ):
@@ -228,11 +322,11 @@ def run_training_iteration(
 
     # --- DataLoader ---
     dataset = ChessDataset(training_data)
-    data_loader = DataLoader(
+    dataloader = DataLoader(
         dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=0,  # Adjust based on your system
+        num_workers=config.NUM_WORKERS,
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -243,9 +337,17 @@ def run_training_iteration(
 
     estimated_SPE = (len(dataset) + config.BATCH_SIZE - 1) // config.BATCH_SIZE
     global_step = iteration * config.EPOCHS_PER_ITERATION * estimated_SPE
+
     for epoch in range(config.EPOCHS_PER_ITERATION):
         global_step = train_network(
-            model, optimizer, scheduler, data_loader, epoch, writer, global_step
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            dataloader,
+            epoch,
+            writer,
+            global_step,
         )
 
     print(f"===== Finished Training Iteration {iteration} =====")

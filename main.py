@@ -6,7 +6,7 @@ Orchestrates self-play, training, and potentially evaluation.
 
 import os
 from numpy import ceil
-import numpy
+import math
 import torch
 import torch.optim as optim
 import multiprocessing as mp
@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from network import PolicyValueNet
 from self_play import run_self_play_game, save_game_data
-from train import run_training_iteration, load_checkpoint
+from train import run_training_iteration, run_pretraining, load_checkpoint
 
 
 def run_self_play_worker(args):
@@ -69,74 +69,78 @@ def main():
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
 
-    steps_per_epoch = numpy.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
+    # scheduler (self-play)
+    steps_per_epoch = math.ceil(config.GAME_BUFFER_SIZE / config.BATCH_SIZE)
     total_steps = config.NUM_ITERATIONS * config.EPOCHS_PER_ITERATION * steps_per_epoch
+    scheduler = CosineAnnealingLR(optimizer, 1, eta_min=config.LR_MIN)
 
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+    scaler = torch.GradScaler(config.DEVICE)
 
-    # Try loading the 'best_model.pth' first, then specific checkpoints
+    # TODO: Try load pretrained weights, then 'best_model.pth', then checkpoints
+    start_iter = -1
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
-    start_iter = 0
+    pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
     if os.path.exists(best_model_path):
-        try:
-            print(f"Loading weights from {best_model_path}")
-            model.load_state_dict(
-                torch.load(best_model_path, map_location=config.DEVICE)
+        print(f"Loading weights from {best_model_path}")
+        model.load_state_dict(torch.load(best_model_path, map_location=config.DEVICE))
+        # Find the latest checkpoint to potentially resume optimizer state and iteration count
+        checkpoint_files = sorted(
+            glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
+        )
+        if checkpoint_files:
+            latest_checkpoint = max(
+                checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
             )
-            # Find the latest checkpoint to potentially resume optimizer state and iteration count
-            checkpoint_files = sorted(
-                glob.glob(os.path.join(config.SAVE_DIR, "checkpoint_iter_*.pth"))
+            start_iter = load_checkpoint(model, optimizer, scheduler, latest_checkpoint)
+        else:
+            print(
+                "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
             )
-            if checkpoint_files:
-                latest_checkpoint = max(
-                    checkpoint_files, key=lambda f: int(f.split("_")[-1].split(".")[0])
-                )
-                start_iter = load_checkpoint(
-                    model, optimizer, scheduler, latest_checkpoint
-                )
-            else:
-                print(
-                    "Loaded 'best_model.pth' weights, but no optimizer checkpoint found. Starting optimizer fresh."
-                )
-        except Exception as e:
-            print(f"Error loading best model weights: {e}. Starting fresh.")
-            # Fallback restart
             start_iter = 0
-    else:
-        print("No best_model.pth found. Starting training from scratch.")
+            scheduler = CosineAnnealingLR(
+                optimizer, T_max=total_steps, eta_min=config.LR_MIN
+            )
+    elif os.path.exists(pretrained_path):
+        # load pretrained weights
+        try:
+            model.load_state_dict(
+                torch.load(pretrained_path, map_location=config.DEVICE)
+            )
+            print("Loaded pretrained weights")
+            # skip pretraining
+            start_iter = 0
+        except Exception as e:
+            print(f"Loading pretrained model error: {e}")
 
-    # --- Main Training Loop ---
+    # --- Supervised Pre-Training --
+    if start_iter == -1:
+        # init scheduler for pretraining
+        scheduler = CosineAnnealingLR(
+            optimizer, config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
+        )
+        run_pretraining(model, optimizer, scheduler, scaler, writer)
+
+        # reset scheduler after pretraining
+        scheduler.last_epoch = 1
+
+    # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
         print(f"\n{'=' * 20} Iteration {iteration}/{config.NUM_ITERATIONS} {'=' * 20}")
-
-        # --- Self-Play ---
         print("\n--- Starting Self-Play Phase ---")
-        model.eval()
 
+        model.eval()
         current_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
         if not os.path.exists(current_model_path):
-            # save if no weights
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        num_workers = config.NUM_WORKERS
+        num_workers = config.NUM_THREADS
         num_games_this_iteration = int(
             num_workers * ceil(config.GAMES_MINIMUM / num_workers)
         )
-
         worker_args = [
             (current_model_path, iteration, i) for i in range(num_games_this_iteration)
         ]
-
-        # Use multiprocessing pool for parallel game generation
-        # num_workers = max(1, mp.cpu_count() // 2)
-
-        print(
-            f"Running {num_games_this_iteration} self-play games using {num_workers} workers..."
-        )
-
-        # Clear old data for this iteration if necessary (optional)
-        # shutil.rmtree(os.path.join(config.DATA_DIR, f"iter_{iteration}"), ignore_errors=True)
 
         sp_start = time.time()
         if num_workers > 1:
@@ -168,16 +172,13 @@ def main():
         print("\n--- Starting Training Phase ---")
         tr_start = time.time()
 
-        run_training_iteration(model, optimizer, scheduler, iteration, writer)
+        run_training_iteration(model, optimizer, scheduler, scaler, iteration, writer)
 
         tr_duration = time.time() - tr_start
         print(f"--- Training Phase Finished [{tr_duration:.2f}s] ---")
 
         # --- Tensorboard ---
         writer.add_scalar("Time/train_duration", tr_duration, iteration)
-
-        # Optional Step 3: Evaluation against a baseline or previous checkpoint
-        # (Not implemented in this stub)
 
     print("\n===== AlphaZero Chess Training Completed =====")
 
