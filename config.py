@@ -29,7 +29,7 @@ INPUT_CHANNELS = 120
 NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
-NUM_SIMULATIONS = 400  # Number of MCTS simulations per move
+NUM_SIMULATIONS = 250  # Number of MCTS simulations per move
 CPUCT = 1.0  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
@@ -41,18 +41,18 @@ MCTS_BATCH_SIZE = 128
 
 # --- Neural Network ---
 RESIDUAL_BLOCKS = 19  # Number of residual blocks in the network
-CONV_FILTERS = 256  # Number of filters in convolutional layers
+CONV_FILTERS = 384  # Number of filters in convolutional layers
 
 # --- Pretraining ---
 NUM_EPOCHS = 128
-PRETRAINING_T_MAX = 1
+PRETRAINING_T_MAX = 14_789
 # --- Training ---
-NUM_WORKERS = 6
-NUM_THREADS = 1
+NUM_WORKERS = 12
+NUM_THREADS = 3
 GAMES_MINIMUM = 100
 
+BATCH_SIZE = 512
 MAX_GAME_MOVES = 16384
-BATCH_SIZE = 1024
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
 LR_MIN = 1e-6
@@ -62,7 +62,7 @@ CHECKPOINT_INTERVAL = 5  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 100000  # Maximum number of games to store for training data
 
 # --- Paths ---
-PGN_DATA_DIR = "pgn-engines"
+PGN_DATA_DIR = "master-archive"
 SAVE_DIR = "checkpoints"
 LOG_DIR = "logs"
 DATA_DIR = "data"

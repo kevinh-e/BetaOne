@@ -239,6 +239,10 @@ def train_network(
                 refresh=True,
             )
 
+        if global_step % 20000 == 0:
+            pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
+            torch.save(model.state_dict(), pretrained_path)
+
         global_step += 1
 
     # --- Tensorboard (epochs) ---
@@ -328,6 +332,7 @@ def run_training_iteration(
         batch_size=config.BATCH_SIZE,
         shuffle=True,
         num_workers=config.NUM_WORKERS,
+        prefetch_factor=4,
         pin_memory=torch.cuda.is_available(),
     )
 

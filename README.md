@@ -23,3 +23,6 @@ AlphaZero-style chess engine
         considered c++ parse script
         implemented an iteratable dataset for parsing large data into tensors
         changed to a cosineannealing learning rate scheduler for high number of iterations
+    using pgns from:
+        <https://database.nikonoel.fr/>
+        <https://github.com/TCEC-Chess/tcecgames>
