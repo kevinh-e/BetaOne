@@ -47,12 +47,12 @@ CONV_FILTERS = 256  # Number of filters in convolutional layers
 NUM_EPOCHS = 128
 PRETRAINING_T_MAX = 1
 # --- Training ---
-NUM_WORKERS = 5
+NUM_WORKERS = 6
 NUM_THREADS = 1
 GAMES_MINIMUM = 100
 
 MAX_GAME_MOVES = 16384
-BATCH_SIZE = 256
+BATCH_SIZE = 1024
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
 LR_MIN = 1e-6
@@ -62,7 +62,7 @@ CHECKPOINT_INTERVAL = 5  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 100000  # Maximum number of games to store for training data
 
 # --- Paths ---
-PGN_DATA_DIR = "pgns"
+PGN_DATA_DIR = "pgn-engines"
 SAVE_DIR = "checkpoints"
 LOG_DIR = "logs"
 DATA_DIR = "data"

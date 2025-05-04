@@ -115,7 +115,7 @@ def main():
     # --- Supervised Pre-Training --
     if start_iter == -1:
         # init scheduler for pretraining
-        scheduler = CosineAnnealingLR(optimizer, T_max=1_255_388, eta_min=config.LR_MIN)
+        scheduler = CosineAnnealingLR(optimizer, T_max=313_847, eta_min=config.LR_MIN)
         run_pretraining(model, optimizer, scheduler, scaler, writer)
 
         # reset scheduler after pretraining
