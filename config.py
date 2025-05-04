@@ -41,14 +41,14 @@ MCTS_BATCH_SIZE = 128
 
 # --- Neural Network ---
 RESIDUAL_BLOCKS = 19  # Number of residual blocks in the network
-CONV_FILTERS = 384  # Number of filters in convolutional layers
+CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Pretraining ---
 NUM_EPOCHS = 128
 PRETRAINING_T_MAX = 14_789
 # --- Training ---
 NUM_WORKERS = 12
-NUM_THREADS = 3
+NUM_THREADS = 4
 GAMES_MINIMUM = 100
 
 BATCH_SIZE = 512
