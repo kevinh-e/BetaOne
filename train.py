@@ -111,7 +111,7 @@ class ChessDataset(Dataset):
         return state, policy_tensor, value_tensor
 
 
-def load_recent_data(iteration: int, num_past: int = 3) -> List[SelfPlayData]:
+def load_recent_data(iteration: int, num_past: int = 5) -> List[SelfPlayData]:
     """Loads all game data starting from a specific self-play iteration."""
     all_data: List[SelfPlayData] = []
 

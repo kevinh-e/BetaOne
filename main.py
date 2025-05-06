@@ -122,6 +122,7 @@ def main():
 
         # reset scheduler after pretraining
         scheduler.last_epoch = 1
+        start_iter = 0
 
     # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
