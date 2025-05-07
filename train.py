@@ -111,7 +111,7 @@ class ChessDataset(Dataset):
         return state, policy_tensor, value_tensor
 
 
-def load_recent_data(iteration: int, num_past: int = 3) -> List[SelfPlayData]:
+def load_recent_data(iteration: int, num_past: int = 5) -> List[SelfPlayData]:
     """Loads all game data starting from a specific self-play iteration."""
     all_data: List[SelfPlayData] = []
 
@@ -200,15 +200,16 @@ def train_network(
 
         optimizer.zero_grad()
 
-        with torch.autocast(config.DEVICE):
-            policies, values = model(states)
-            loss, p_loss, v_loss = calculate_loss(
-                policies, values, t_policies, t_values
-            )
+        # with torch.autocast(config.DEVICE):
+        policies, values = model(states)
+        loss, p_loss, v_loss = calculate_loss(policies, values, t_policies, t_values)
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
+
+        # scaler.scale(loss).backward()
+        # scaler.step(optimizer)
+        # scaler.update()
 
         scheduler.step()
 
@@ -237,6 +238,10 @@ def train_network(
                 },
                 refresh=True,
             )
+
+        if global_step % 100000 == 0:
+            pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
+            torch.save(model.state_dict(), pretrained_path)
 
         global_step += 1
 
@@ -270,7 +275,7 @@ def run_pretraining(
     Trains the policy and value model on PGN data
     """
     pgn_dir = config.PGN_DATA_DIR
-    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"))
+    paths = glob.glob(os.path.join(pgn_dir, "**", "*.pgn"), recursive=True)
 
     print(f"Parsing {len(paths)} PGN files")
     dataset = PGNDataset(paths)
@@ -327,6 +332,7 @@ def run_training_iteration(
         batch_size=config.BATCH_SIZE,
         shuffle=True,
         num_workers=config.NUM_WORKERS,
+        prefetch_factor=4,
         pin_memory=torch.cuda.is_available(),
     )
 

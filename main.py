@@ -116,12 +116,13 @@ def main():
     if start_iter == -1:
         # init scheduler for pretraining
         scheduler = CosineAnnealingLR(
-            optimizer, config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
+            optimizer, T_max=config.PRETRAINING_T_MAX, eta_min=config.LR_MIN
         )
         run_pretraining(model, optimizer, scheduler, scaler, writer)
 
         # reset scheduler after pretraining
         scheduler.last_epoch = 1
+        start_iter = 0
 
     # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):

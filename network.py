@@ -81,10 +81,10 @@ class PolicyValueNet(nn.Module):
 
         # --- Value Head ---
         # Predicts the expected outcome of the game (-1 to 1)
-        self.value_conv = nn.Conv2d(config.CONV_FILTERS, 1, kernel_size=1, bias=False)
-        self.value_bn = nn.BatchNorm2d(1)
+        self.value_conv = nn.Conv2d(config.CONV_FILTERS, 32, kernel_size=1, bias=False)
+        self.value_bn = nn.BatchNorm2d(32)
         # Flatten and fully connected layers
-        self.value_fc1 = nn.Linear(1 * config.BOARD_SIZE * config.BOARD_SIZE, 256)
+        self.value_fc1 = nn.Linear(32 * config.BOARD_SIZE * config.BOARD_SIZE, 256)
         # Single output value
         self.value_fc2 = nn.Linear(256, 1)
 
