@@ -4,3 +4,8 @@
 /__pycache__
 /temp
 /pgns
+/fishtest
+/masterpgns
+/pgn-engines
+
+pgn_errors.log
