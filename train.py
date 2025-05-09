@@ -239,7 +239,7 @@ def train_network(
                 refresh=True,
             )
 
-        if global_step % 100000 == 0:
+        if global_step % config.MID_EPOCH_CHECKPOINT == 0:
             pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
             torch.save(model.state_dict(), pretrained_path)
 

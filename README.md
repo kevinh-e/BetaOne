@@ -18,7 +18,7 @@ AlphaZero-style chess engine
         mixed precision training
 
 4.
-    drastically improving performance with supervised pretraining
+    trying to drastically improve performance with supervised pretraining
         using pgn data from engine games + lichess high level games
         considered c++ parse script
         implemented an iteratable dataset for parsing large data into tensors
@@ -26,3 +26,6 @@ AlphaZero-style chess engine
     using pgns from:
         <https://database.nikonoel.fr/>
         <https://github.com/TCEC-Chess/tcecgames>
+
+5. didnt work as well as planned, so using better, cleaner data from stockfish's fishtest repo:
+        <https://huggingface.co/datasets/robertnurnberg/fishtest_pgns>

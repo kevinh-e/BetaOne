@@ -41,29 +41,29 @@ WIDEN_COEFF = 1.5
 MCTS_BATCH_SIZE = 128
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 15  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 17  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Pretraining ---
-NUM_EPOCHS = 128
-PRETRAINING_T_MAX = 10_666
-# --- Training ---
 NUM_WORKERS = 6
-NUM_THREADS = 3
+MID_EPOCH_CHECKPOINT = 1_000_000
+# --- Training ---
+PRETRAINING_T_MAX = 1
+NUM_THREADS = 4
 GAMES_MINIMUM = 100
 
 BATCH_SIZE = 256
 MAX_GAME_MOVES = 16384
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
-LR_MIN = 1e-6
+LR_MIN = 5e-7
 EPOCHS_PER_ITERATION = 18  # Number of training epochs per self-play iteration
 NUM_ITERATIONS = 80  # Total number of training iterations (self-play -> train)
 CHECKPOINT_INTERVAL = 1  # Save model checkpoint every N iterations
 GAME_BUFFER_SIZE = 100000  # Maximum number of games to store for training data
 
 # --- Paths ---
-PGN_DATA_DIR = "pgn-engines/test"
+PGN_DATA_DIR = "fishtest"
 SAVE_DIR = "checkpoints"
 LOG_DIR = "logs"
 DATA_DIR = "data"
