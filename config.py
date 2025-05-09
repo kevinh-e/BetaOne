@@ -46,9 +46,9 @@ CONV_FILTERS = 256  # Number of filters in convolutional layers
 
 # --- Pretraining ---
 NUM_WORKERS = 6
-MID_EPOCH_CHECKPOINT = 1_000_000
+MID_EPOCH_CHECKPOINT = 50_000
 # --- Training ---
-PRETRAINING_T_MAX = 1
+PRETRAINING_T_MAX = 1_343_500
 NUM_THREADS = 4
 GAMES_MINIMUM = 100
 
