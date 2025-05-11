@@ -23,6 +23,19 @@ from self_play import run_self_play_game, save_game_data
 from train import run_training_iteration, run_pretraining, load_checkpoint
 
 
+def check_existing_self_play_data(iteration: int) -> bool:
+    """Checks if theres already self-play examples for this iteration"""
+    data_dir = os.path.join(config.DATA_DIR, f"iter_{iteration}")
+    if not os.path.isdir(data_dir):
+        return False
+
+    files = glob.glob(os.path.join(data_dir, "game_*.pkl"))
+    if not files:
+        return False
+
+    return True
+
+
 def run_self_play_worker(args):
     """Worker function for parallel self-play game generation."""
     model_weights_path, iteration, game_idx = args
@@ -76,10 +89,10 @@ def main():
 
     scaler = torch.GradScaler(config.DEVICE)
 
-    # TODO: Try load pretrained weights, then 'best_model.pth', then checkpoints
-    start_iter = -1
+    start_iter = -1  # will be updated if pretrained exists or checkpoint
     best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
     pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
+
     if os.path.exists(best_model_path):
         print(f"Loading weights from {best_model_path}")
         model.load_state_dict(torch.load(best_model_path, map_location=config.DEVICE))
@@ -100,6 +113,7 @@ def main():
             scheduler = CosineAnnealingLR(
                 optimizer, T_max=total_steps, eta_min=config.LR_MIN
             )
+
     elif os.path.exists(pretrained_path):
         # load pretrained weights
         try:
@@ -127,47 +141,54 @@ def main():
     # --- Self-Play Training Loop ---
     for iteration in range(start_iter, config.NUM_ITERATIONS):
         print(f"\n{'=' * 20} Iteration {iteration}/{config.NUM_ITERATIONS} {'=' * 20}")
-        print("\n--- Starting Self-Play Phase ---")
 
-        model.eval()
         current_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
         if not os.path.exists(current_model_path):
             print("Saving initial model weights...")
             torch.save(model.state_dict(), current_model_path)
 
-        num_workers = config.NUM_THREADS
-        num_games_this_iteration = int(
-            num_workers * ceil(config.GAMES_MINIMUM / num_workers)
-        )
-        worker_args = [
-            (current_model_path, iteration, i) for i in range(num_games_this_iteration)
-        ]
+        skip_sp = check_existing_self_play_data(iteration)
 
-        sp_start = time.time()
-        if num_workers > 1:
-            try:
-                with mp.Pool(processes=num_workers) as pool:
-                    list(
-                        tqdm(
-                            pool.imap_unordered(run_self_play_worker, worker_args),
-                            total=num_games_this_iteration,
-                            desc="Self-Play Games",
+        if not skip_sp:
+            print("\n--- Starting Self-Play Phase ---")
+            model.eval()
+
+            num_workers = config.NUM_THREADS
+            num_games_this_iteration = int(
+                num_workers * ceil(config.GAMES_MINIMUM / num_workers)
+            )
+            worker_args = [
+                (current_model_path, iteration, i)
+                for i in range(num_games_this_iteration)
+            ]
+
+            sp_start = time.time()
+            if num_workers > 1:
+                try:
+                    with mp.Pool(processes=num_workers) as pool:
+                        list(
+                            tqdm(
+                                pool.imap_unordered(run_self_play_worker, worker_args),
+                                total=num_games_this_iteration,
+                                desc="Self-Play Games",
+                            )
                         )
+                except Exception as e:
+                    print(
+                        f"Running self-play sequentially as fallback: Multiprocessing error {e}"
                     )
-            except Exception as e:
-                print(
-                    f"Running self-play sequentially as fallback: Multiprocessing error {e}"
-                )
-                # Fallback to sequential execution if pool fails
+                    # Fallback to sequential execution if pool fails
+                    for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
+                        run_self_play_worker(args)
+            else:
+                print("Running self-play sequentially...")
                 for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
                     run_self_play_worker(args)
-        else:
-            print("Running self-play sequentially...")
-            for args in tqdm(worker_args, desc="Self-Play Games (Sequetial)"):
-                run_self_play_worker(args)
 
-        sp_duration = time.time() - sp_start
-        print(f"--- Self-Play Phase Finished [{sp_duration:.2f}s] ---")
+            sp_duration = time.time() - sp_start
+            print(f"--- Self-Play Phase Finished [{sp_duration:.2f}s] ---")
+        else:
+            print("Skipping self-play...")
 
         # --- Step 2: Training ---
         print("\n--- Starting Training Phase ---")
