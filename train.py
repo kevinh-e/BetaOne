@@ -42,7 +42,7 @@ def parse_pgn_eval(comment: str) -> Tuple[float | None, int | None]:
         sign = -1 if match.group(1) == "-" else 1
         mate_moves = match.group(2)
         value_str = match.group(3)
-        decimal_str = match.group(3)
+        decimal_str = match.group(4)
 
         if mate_moves:
             try:
@@ -70,8 +70,8 @@ def eval_to_value(eval: float, mate_in_moves: int | None = None) -> float:
     if mate_in_moves is not None:
         return 1.0 if mate_in_moves > 0 else -1.0
 
-    # sigmoid mapping using 150.0 scale factor (normal)
-    scaled = eval / 150
+    # sigmoid mapping using 2 scale factor (scaled for pawn units)
+    scaled = eval / 2
     value = 2.0 / (1.0 + math.exp(-scaled)) - 1.0
 
     return max(-1.0, min(1.0, value))
@@ -272,16 +272,18 @@ def train_network(
 
         optimizer.zero_grad()
 
-        # with torch.autocast(config.DEVICE):
-        policies, values = model(states)
-        loss, p_loss, v_loss = calculate_loss(policies, values, t_policies, t_values)
+        with torch.autocast(config.DEVICE):
+            policies, values = model(states)
+            loss, p_loss, v_loss = calculate_loss(
+                policies, values, t_policies, t_values
+            )
 
-        loss.backward()
-        optimizer.step()
+        # loss.backward()
+        # optimizer.step()
 
-        # scaler.scale(loss).backward()
-        # scaler.step(optimizer)
-        # scaler.update()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         scheduler.step()
 
@@ -358,6 +360,16 @@ def run_pretraining(
         pin_memory=torch.cuda.is_available(),
     )
 
+    # add graph to tensorboard
+    dummy_input = torch.randn(
+        1,
+        config.INPUT_CHANNELS,
+        config.BOARD_SIZE,
+        config.BOARD_SIZE,
+        device=config.DEVICE,
+    )
+    writer.add_graph(model, dummy_input)
+
     print("\n===== Starting Pretraining =====")
 
     train_network(model, optimizer, scheduler, scaler, dataloader, -1, writer, -1)
@@ -405,6 +417,7 @@ def run_training_iteration(
         shuffle=True,
         num_workers=config.NUM_WORKERS,
         prefetch_factor=4,
+        # persistent_workers=True,
         pin_memory=torch.cuda.is_available(),
     )
 
