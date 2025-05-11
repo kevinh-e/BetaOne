@@ -14,6 +14,10 @@
 
 - squeeze and excite block added to the network
 
+### Release
+
+Finally created a reasonably capable engine, able to compete against beginner-intermediate human players
+
 ## 0.5
 
 - didnt work as well as planned, so using better, cleaner data from stockfish's fishtest repo:
