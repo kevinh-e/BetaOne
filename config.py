@@ -43,6 +43,7 @@ MCTS_BATCH_SIZE = 96
 # --- Neural Network ---
 RESIDUAL_BLOCKS = 18  # Number of residual blocks in the network
 CONV_FILTERS = 256  # Number of filters in convolutional layers
+SE_REDUCTION_RATIO = 16  # Squeee and excite reduction ratio
 
 # --- Pretraining ---
 NUM_WORKERS = 6

@@ -4,11 +4,45 @@ Defines the neural network architecture (Policy-Value Network).
 Based on the AlphaGo Zero paper, adapted for Chess.
 """
 
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 import config
+
+
+class SEBlock(nn.Module):
+    """
+    Squeeze-and-Excitation Block.
+    Adds channel-wise attention to inputs.
+    """
+
+    def __init__(self, num_channels: int, reduction_ratio: int = 16):
+        super().__init__()
+        self.channels = num_channels
+        self.reduction_ratio = reduction_ratio
+        self.squeeze = nn.AdaptiveAvgPool2d(1)
+        self.excitation = nn.Sequential(
+            nn.Linear(num_channels, num_channels // reduction_ratio, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(num_channels // reduction_ratio, num_channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """
+        forward pass through SE block
+        """
+        batch_size, num_channels, _, _ = x.size()
+        # squeeze
+        y = self.squeeze(x)
+        y = y.view(batch_size, num_channels)
+        # excitation
+        y = self.excitation(y)
+        y = y.view(batch_size, num_channels, 1, 1)
+
+        return x * y.expand_as(x)
 
 
 class ResidualBlock(nn.Module):
@@ -26,6 +60,7 @@ class ResidualBlock(nn.Module):
             num_filters, num_filters, kernel_size=3, padding=1, bias=False
         )
         self.bn2 = nn.BatchNorm2d(num_filters)
+        self.seblock = SEBlock(num_filters, config.SE_REDUCTION_RATIO)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -40,6 +75,8 @@ class ResidualBlock(nn.Module):
         identity = x
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
+        # squeeze and excite
+        out = self.seblock(out)
         # skip connection
         out += identity
         out = F.relu(out)

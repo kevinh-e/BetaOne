@@ -5,7 +5,6 @@
 /temp
 /pgns
 /fishtest
-/masterpgns
-/pgn-engines
+/pgntest
 
 pgn_errors.log
