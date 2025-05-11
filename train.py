@@ -266,6 +266,8 @@ def train_network(
     t_loss, t_p_loss, t_v_loss, batch_count = (0.0, 0.0, 0.0, 0)
     dataiterator = tqdm(dataloader, desc=f"Epoch {epoch + 1} Training", leave=False)
 
+    clipped = 0
+
     for states, t_policies, t_values in dataiterator:
         states = states.to(config.DEVICE)
         t_policies = t_policies.to(config.DEVICE)
@@ -273,16 +275,22 @@ def train_network(
 
         optimizer.zero_grad()
 
-        # with torch.autocast(config.DEVICE):
-        policies, values = model(states)
-        loss, p_loss, v_loss = calculate_loss(policies, values, t_policies, t_values)
+        with torch.autocast(config.DEVICE):
+            policies, values = model(states)
+            loss, p_loss, v_loss = calculate_loss(
+                policies, values, t_policies, t_values
+            )
 
-        loss.backward()
-        optimizer.step()
+        # loss.backward()
+        # optimizer.step()
 
-        # scaler.scale(loss).backward()
-        # scaler.step(optimizer)
-        # scaler.update()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        clipped = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), max_norm=config.GRAD_CLIP_MAX
+        )
+        scaler.step(optimizer)
+        scaler.update()
 
         scheduler.step()
 
@@ -290,6 +298,10 @@ def train_network(
         t_p_loss += p_loss.item()
         t_v_loss += v_loss.item()
         batch_count += 1
+
+        if clipped > config.GRAD_CLIP_MAX:
+            clipped += 1
+            writer.add_scalar("Clipping", clipped, global_step)
 
         # --- Tensorboard ---
         if global_step % 10 == 0:
@@ -314,7 +326,7 @@ def train_network(
 
         best_model_path = os.path.join(config.SAVE_DIR, "best_model.pth")
 
-        if global_step % config.MID_EPOCH_CHECKPOINT == 0 and os.path.exists(
+        if global_step % config.MID_EPOCH_CHECKPOINT == 0 and not os.path.exists(
             best_model_path
         ):
             pretrained_path = os.path.join(config.SAVE_DIR, "pretrained.pth")
