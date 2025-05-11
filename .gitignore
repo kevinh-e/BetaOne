@@ -4,3 +4,7 @@
 /__pycache__
 /temp
 /pgns
+/fishtest
+/pgntest
+
+pgn_errors.log

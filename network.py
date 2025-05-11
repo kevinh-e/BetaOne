@@ -4,11 +4,45 @@ Defines the neural network architecture (Policy-Value Network).
 Based on the AlphaGo Zero paper, adapted for Chess.
 """
 
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 import config
+
+
+class SEBlock(nn.Module):
+    """
+    Squeeze-and-Excitation Block.
+    Adds channel-wise attention to inputs.
+    """
+
+    def __init__(self, num_channels: int, reduction_ratio: int = 16):
+        super().__init__()
+        self.channels = num_channels
+        self.reduction_ratio = reduction_ratio
+        self.squeeze = nn.AdaptiveAvgPool2d(1)
+        self.excitation = nn.Sequential(
+            nn.Linear(num_channels, num_channels // reduction_ratio, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(num_channels // reduction_ratio, num_channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """
+        forward pass through SE block
+        """
+        batch_size, num_channels, _, _ = x.size()
+        # squeeze
+        y = self.squeeze(x)
+        y = y.view(batch_size, num_channels)
+        # excitation
+        y = self.excitation(y)
+        y = y.view(batch_size, num_channels, 1, 1)
+
+        return x * y.expand_as(x)
 
 
 class ResidualBlock(nn.Module):
@@ -46,6 +80,44 @@ class ResidualBlock(nn.Module):
         return out
 
 
+class SEResidualBlock(nn.Module):
+    """
+    A single residual block as used in AlphaGo Zero, but with an SEBlock.
+    """
+
+    def __init__(self, num_filters: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            num_filters, num_filters, kernel_size=3, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(num_filters)
+        self.conv2 = nn.Conv2d(
+            num_filters, num_filters, kernel_size=3, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(num_filters)
+        self.seblock = SEBlock(num_filters, config.SE_REDUCTION_RATIO)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the residual block.
+
+        Args:
+            x: Input tensor.
+
+        Returns:
+            Output tensor after applying residual connection.
+        """
+        identity = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        # squeeze and excite
+        out = self.seblock(out)
+        # skip connection
+        out += identity
+        out = F.relu(out)
+        return out
+
+
 class PolicyValueNet(nn.Module):
     """
     The main neural network combining policy and value heads.
@@ -64,9 +136,13 @@ class PolicyValueNet(nn.Module):
         self.bn_input = nn.BatchNorm2d(config.CONV_FILTERS)
 
         # Stack of residual blocks
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(config.CONV_FILTERS) for _ in range(config.RESIDUAL_BLOCKS)]
-        )
+        res_blocks = []
+        for _ in range(config.RESIDUAL_BLOCKS):
+            res_blocks.append(ResidualBlock(config.CONV_FILTERS))
+        for _ in range(config.SE_RESIDUAL_BLOCKS):
+            res_blocks.append(SEResidualBlock(config.CONV_FILTERS))
+
+        self.residual_tower = nn.Sequential(*res_blocks)
 
         # --- Policy Head ---
         # Predicts move probabilities
@@ -105,7 +181,7 @@ class PolicyValueNet(nn.Module):
         """
         # --- Body ---
         x = F.relu(self.bn_input(self.conv_input(x)))
-        x = self.residual_blocks(x)
+        x = self.residual_tower(x)
 
         # --- Policy Head ---
         policy = F.relu(self.policy_bn(self.policy_conv(x)))

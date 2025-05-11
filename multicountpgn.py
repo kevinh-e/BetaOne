@@ -67,30 +67,38 @@ def count_samples_in_file(filepath: str) -> int:
                 if outcome is None:
                     continue
 
-                board = game.board()
-                history = [board.copy()]
-                tracker = utils.RepetitionTracker()
-                tracker.add_board(board)
+                # Walk through moves, count only if encode_board succeeds (lengthy)
+                #
+                # board = game.board()
+                # history = [board.copy()]
+                # tracker = utils.RepetitionTracker()
+                # tracker.add_board(board)
+                #
+                # for node in game.mainline():
+                #     move = node.move
+                #     if move is None:
+                #         continue
+                #     try:
+                #         # core validation
+                #         _ = utils.encode_board(board, history[-8:], tracker)
+                #         local_sample_count += 1
+                #     except Exception:
+                #         # skip invalid states silently
+                #         pass
+                #
+                #     # advance board
+                #     board.push(move)
+                #     tracker.add_board(board)
+                #     history.append(board.copy())
+                #     if len(history) > 8:
+                #         history.pop(0)
 
-                # Walk through moves, count only if encode_board succeeds
+                # count moves, assume theyre valid lol
                 for node in game.mainline():
                     move = node.move
                     if move is None:
                         continue
-                    try:
-                        # core validation
-                        _ = utils.encode_board(board, history[-8:], tracker)
-                        local_sample_count += 1
-                    except Exception:
-                        # skip invalid states silently
-                        pass
-
-                    # advance board
-                    board.push(move)
-                    tracker.add_board(board)
-                    history.append(board.copy())
-                    if len(history) > 8:
-                        history.pop(0)
+                    local_sample_count += 1
 
     except Exception as e:
         logging.error(
