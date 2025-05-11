@@ -60,6 +60,41 @@ class ResidualBlock(nn.Module):
             num_filters, num_filters, kernel_size=3, padding=1, bias=False
         )
         self.bn2 = nn.BatchNorm2d(num_filters)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the residual block.
+
+        Args:
+            x: Input tensor.
+
+        Returns:
+            Output tensor after applying residual connection.
+        """
+        identity = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        # skip connection
+        out += identity
+        out = F.relu(out)
+        return out
+
+
+class SEResidualBlock(nn.Module):
+    """
+    A single residual block as used in AlphaGo Zero, but with an SEBlock.
+    """
+
+    def __init__(self, num_filters: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            num_filters, num_filters, kernel_size=3, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(num_filters)
+        self.conv2 = nn.Conv2d(
+            num_filters, num_filters, kernel_size=3, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(num_filters)
         self.seblock = SEBlock(num_filters, config.SE_REDUCTION_RATIO)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -101,9 +136,13 @@ class PolicyValueNet(nn.Module):
         self.bn_input = nn.BatchNorm2d(config.CONV_FILTERS)
 
         # Stack of residual blocks
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(config.CONV_FILTERS) for _ in range(config.RESIDUAL_BLOCKS)]
-        )
+        res_blocks = []
+        for _ in range(config.RESIDUAL_BLOCKS):
+            res_blocks.append(ResidualBlock(config.CONV_FILTERS))
+        for _ in range(config.SE_RESIDUAL_BLOCKS):
+            res_blocks.append(SEResidualBlock(config.CONV_FILTERS))
+
+        self.residual_tower = nn.Sequential(*res_blocks)
 
         # --- Policy Head ---
         # Predicts move probabilities
@@ -142,7 +181,7 @@ class PolicyValueNet(nn.Module):
         """
         # --- Body ---
         x = F.relu(self.bn_input(self.conv_input(x)))
-        x = self.residual_blocks(x)
+        x = self.residual_tower(x)
 
         # --- Policy Head ---
         policy = F.relu(self.policy_bn(self.policy_conv(x)))
