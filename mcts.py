@@ -183,8 +183,6 @@ def run_mcts(
         with torch.no_grad(), torch.autocast(config.DEVICE):
             logits, value = model(root.encoded_state.unsqueeze(0).to(config.DEVICE))
         policy_probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-        root.expand(policy_probs, list(root.board_state.legal_moves))
-        value = value.item()
 
         # Add Dirichlet noise
         if config.DIRICHLET_ALPHA > 0:

@@ -30,14 +30,14 @@ NUM_ACTIONS = 8 * 8 * 73
 
 # --- MCTS ---
 NUM_SIMULATIONS = 250  # Number of MCTS simulations per move
-CPUCT = 1.0  # Exploration constant in PUCT formula
+CPUCT = 1.3  # Exploration constant in PUCT formula
 TEMPERATURE_INITIAL = 1.0  # Initial temperature for action selection during self-play
 TEMPERATURE_FINAL = 0.1  # Final temperature
 TEMPERATURE_THRESHOLD = 30  # Move number after which temperature changes
 DIRICHLET_ALPHA = 0.1  # Alpha value for Dirichlet noise
 # Epsilon value for Dirichlet noise (fraction of noise)
 DIRICHLET_EPSILON = 0.25
-WIDEN_COEFF = 1.5
+WIDEN_COEFF = 1.6
 MCTS_BATCH_SIZE = 96
 
 # --- Neural Network ---

@@ -25,6 +25,7 @@ SelfPlayData = Tuple[torch.Tensor, np.ndarray, float]
 def apply_temperature(probs: np.ndarray, temperature: float) -> np.ndarray:
     """Applies temperature scaling to probabilities."""
     if temperature == 0:
+        # greedy
         new_probs = np.zeros_like(probs)
         max_prob_indices = np.where(probs == np.max(probs))[0]
         if len(max_prob_indices) == 0:
