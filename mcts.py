@@ -182,6 +182,13 @@ def run_mcts(
 
         with torch.no_grad(), torch.autocast(config.DEVICE):
             logits, value = model(root.encoded_state.unsqueeze(0).to(config.DEVICE))
+
+        # error check for NaNs
+        if not torch.isfinite(logits).all() or not torch.isfinite(value).all():
+            raise RuntimeError(
+                f"Model output has invalid entries! logits={logits}, value={value}"
+            )
+
         policy_probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
 
         # Add Dirichlet noise
@@ -282,6 +289,13 @@ def _evaluate_batch(nodes, paths, model):
     batch = torch.stack([n.encoded_state for n in nodes], dim=0).to(config.DEVICE)
     with torch.no_grad(), torch.autocast(config.DEVICE):
         logits, values = model(batch)
+
+    # error check for NaNs
+    if not torch.isfinite(logits).all() or not torch.isfinite(values).all():
+        raise RuntimeError(
+            f"Model output has invalid entries! logits={logits}, value={values}"
+        )
+
     policy_batch = torch.softmax(logits, dim=1).cpu().numpy()
     values = values.squeeze(1).cpu().numpy()
 
