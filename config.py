@@ -41,7 +41,7 @@ WIDEN_COEFF = 1.6
 MCTS_BATCH_SIZE = 96
 
 # --- Neural Network ---
-RESIDUAL_BLOCKS = 15  # Number of residual blocks in the network
+RESIDUAL_BLOCKS = 13  # Number of residual blocks in the network
 SE_RESIDUAL_BLOCKS = 5  # Number of residual blocks in the network with SEBlocks
 CONV_FILTERS = 256  # Number of filters in convolutional layers
 SE_REDUCTION_RATIO = 16  # Squeee and excite reduction ratio
@@ -49,10 +49,10 @@ GRAD_CLIP_MAX = 2.0
 
 # --- Pretraining ---
 NUM_WORKERS = 6
-MID_EPOCH_CHECKPOINT = 50_000
+MID_EPOCH_CHECKPOINT = 30_000
 # --- Training ---
-PRETRAINING_T_MAX = 1_343_500
-NUM_THREADS = 6
+PRETRAINING_T_MAX = 1_591_964
+NUM_THREADS = 4
 GAMES_MINIMUM = 100
 
 BATCH_SIZE = 256
